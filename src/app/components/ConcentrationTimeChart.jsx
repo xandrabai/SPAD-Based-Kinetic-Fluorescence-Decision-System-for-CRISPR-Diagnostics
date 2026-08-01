@@ -92,7 +92,16 @@ const ConcentrationTimeChart = ({ concentrationData = [] }) => {
 
   // Update plot when new data arrives
   useEffect(() => {
-    if (concentrationData.length === 0) return;
+    if (concentrationData.length === 0) {
+      setCurrentConcentration(0);
+      Plotly.update(
+        'concentration-time-plot',
+        { x: [[]], y: [[]] },
+        { 'yaxis.range': [0, 100] },
+        [0],
+      ).catch(() => {});
+      return;
+    }
 
     const visibleData = concentrationData.slice(-maxDataPoints);
     const { concentration } = visibleData[visibleData.length - 1];

@@ -4,6 +4,8 @@ import {
   Play,
   Clock,
   CheckCircle2,
+  Pause,
+  RefreshCw,
 } from "lucide-react";
 import {
   XAxis,
@@ -40,6 +42,17 @@ type ConcentrationPoint = {
   time: number;
   concentration: number;
 };
+
+type ConcentrationUpdatePayload = ConcentrationPoint & {
+  isPositive?: boolean;
+  timeToPositive?: number;
+};
+
+function formatDuration(totalSeconds: number) {
+  const m = Math.floor(totalSeconds / 60);
+  const s = Math.floor(totalSeconds % 60);
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
 
 type ThirtySecondAveragePoint = {
   time: number;
@@ -214,7 +227,15 @@ function SignalHistogramPanel() {
   );
 }
 
-function FinalResultPanel({ concentration }: { concentration?: number }) {
+function FinalResultPanel({
+  concentration,
+  isPositive,
+  timeToPositive,
+}: {
+  concentration?: number;
+  isPositive: boolean;
+  timeToPositive: number | null;
+}) {
   return (
     <div
       className="flex flex-col rounded-lg overflow-hidden h-full"
@@ -225,21 +246,33 @@ function FinalResultPanel({ concentration }: { concentration?: number }) {
           Live result
         </span>
       </PanelHeader>
-      <div className="flex-1 flex flex-col items-center justify-center px-4" style={{ background: "#0e1a14" }}>
-        <span className="text-[10px] font-semibold tracking-wide" style={{ color: C.accent }}>
-          TARGET DETECTED
+      <div
+        className="flex-1 flex flex-col items-center justify-center px-4"
+        style={{ background: isPositive ? "#0e1a14" : "#1a1114" }}
+      >
+        <span
+          className="text-sm font-bold tracking-wide"
+          style={{ color: isPositive ? C.accentBright : C.orange }}
+        >
+          {isPositive ? "POSITIVE" : "NEGATIVE"}
         </span>
         <div className="flex items-end gap-1.5 mt-2 leading-none">
-          <span className="text-4xl font-bold" style={{ color: C.accentBright, fontFamily: "JetBrains Mono, monospace" }}>
+          <span className="text-4xl font-bold" style={{ color: isPositive ? C.accentBright : C.muted, fontFamily: "JetBrains Mono, monospace" }}>
             {concentration === undefined ? "--" : concentration.toFixed(2)}
           </span>
-          <span className="text-sm font-semibold mb-0.5" style={{ color: C.accent }}>
+          <span className="text-sm font-semibold mb-0.5" style={{ color: isPositive ? C.accent : C.muted }}>
             µg/ml
           </span>
         </div>
-        <span className="text-[10px] mt-2" style={{ color: C.muted }}>
-          Latest real-time concentration
-        </span>
+        {isPositive && timeToPositive !== null ? (
+          <span className="text-[10px] mt-2" style={{ color: C.muted, fontFamily: "JetBrains Mono, monospace" }}>
+            Time to positive: {formatDuration(timeToPositive)}
+          </span>
+        ) : (
+          <span className="text-[10px] mt-2" style={{ color: C.muted }}>
+            Latest real-time concentration
+          </span>
+        )}
       </div>
     </div>
   );
@@ -318,11 +351,15 @@ function ConcentrationPanel({
 // ── Main App ──────────────────────────────────────────────────────────────────
 export default function App() {
   const [elapsed, setElapsed] = useState({ m: 22, s: 14 });
+  const [hasStarted, setHasStarted] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
   const [measurementState, setMeasurementState] = useState<{
     concentrationDataset: ConcentrationPoint[];
     thirtySecondAverages: ThirtySecondAveragePoint[];
   }>({ concentrationDataset: [], thirtySecondAverages: [] });
-  const spadRef = useRef(null);
+  const [isPositive, setIsPositive] = useState(false);
+  const [timeToPositive, setTimeToPositive] = useState<number | null>(null);
+  const spadRef = useRef<any>(null);
 
   useEffect(() => {
     const t = setInterval(() => {
@@ -335,13 +372,38 @@ export default function App() {
     return () => clearInterval(t);
   }, []);
 
-  const handleUartClick = () => {
-    if (spadRef.current) {
-      spadRef.current.toggleConnection();
+  const handleRunPauseClick = () => {
+    if (!hasStarted) {
+      setHasStarted(true);
+      setIsPaused(false);
+      spadRef.current?.startConnection();
+      return;
     }
+    const nextPaused = !isPaused;
+    setIsPaused(nextPaused);
+    spadRef.current?.togglePause(nextPaused);
   };
 
-  const handleConcentrationUpdate = ({ time, concentration }: ConcentrationPoint) => {
+  const handleRefreshClick = () => {
+    setMeasurementState({ concentrationDataset: [], thirtySecondAverages: [] });
+    setElapsed({ m: 0, s: 0 });
+    setIsPositive(false);
+    setTimeToPositive(null);
+    setIsPaused(false);
+    spadRef.current?.resetData();
+  };
+
+  const handleConcentrationUpdate = ({
+    time,
+    concentration,
+    isPositive: positiveCall,
+    timeToPositive: elapsedAtPositive,
+  }: ConcentrationUpdatePayload) => {
+    if (positiveCall) {
+      setIsPositive(true);
+      setTimeToPositive(elapsedAtPositive ?? time);
+      setIsPaused(true);
+    }
     setMeasurementState(({ concentrationDataset, thirtySecondAverages }) => {
       const nextDataset = [
         ...concentrationDataset.slice(-(MAX_CONCENTRATION_POINTS - 1)),
@@ -399,10 +461,12 @@ export default function App() {
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-1.5">
             <span
-              className="w-1.5 h-1.5 rounded-full animate-pulse"
-              style={{ background: C.accent }}
+              className={`w-1.5 h-1.5 rounded-full ${!isPaused && hasStarted ? "animate-pulse" : ""}`}
+              style={{ background: !hasStarted || isPaused ? C.muted : C.accent }}
             />
-            <span className="text-xs" style={{ color: C.accent }}>Live</span>
+            <span className="text-xs" style={{ color: !hasStarted || isPaused ? C.muted : C.accent }}>
+              {!hasStarted ? "Ready" : isPaused ? "Paused" : "Live"}
+            </span>
           </div>
           <div className="flex items-center gap-1" style={{ color: C.muted }}>
             <Clock size={11} />
@@ -417,15 +481,24 @@ export default function App() {
             35.4k sp/s
           </span>
           <button
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium transition-colors disabled:cursor-not-allowed"
+            style={{ background: hasStarted ? C.border : "#18212c", color: hasStarted ? C.text : C.dimText }}
+            onClick={handleRefreshClick}
+            disabled={!hasStarted}
+          >
+            <RefreshCw size={11} />
+            Refresh
+          </button>
+          <button
             className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-semibold transition-colors"
             style={{
               background: C.accent,
               color: C.bg,
             }}
-            onClick={handleUartClick}
+            onClick={handleRunPauseClick}
           >
-            <Play size={11} />
-            UART
+            {hasStarted && !isPaused ? <Pause size={11} /> : <Play size={11} />}
+            {hasStarted && !isPaused ? "Pause" : "RUN"}
           </button>
         </div>
       </header>
@@ -452,6 +525,8 @@ export default function App() {
           <div className="flex-1 min-h-0">
             <FinalResultPanel
               concentration={measurementState.concentrationDataset.at(-1)?.concentration}
+              isPositive={isPositive}
+              timeToPositive={timeToPositive}
             />
           </div>
           <div className="flex-[2] min-h-0">

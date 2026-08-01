@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef, forwardRef, useImperativeHandle } f
 import Plotly from 'plotly.js-dist-min';
 import { Activity } from 'lucide-react';
 import { processFrame } from '../utils/concentrationPredictor';
+import { evaluateConfidence } from '../utils/predictionConfidence';
+import { MIN_SAMPLES_FOR_PREDICTION } from '../utils/config';
 
 const C = {
   bg: '#0b0f14',
@@ -31,8 +33,11 @@ const SpadHistogram = forwardRef(({ onConcentrationUpdate }, ref) => {
   const portRef = useRef(null);
   const readerRef = useRef(null);
   const keepReadingRef = useRef(true);
+  const isPausedRef = useRef(false);
   const frameCountRef = useRef(0);
-  const lastConcentrationUpdateRef = useRef(0);
+  const sampleCountRef = useRef(0);
+  const predictionSamplesRef = useRef([]);
+  const lastLowerBoundRef = useRef(null);
 
   const numBins = 3840;
   const xData = Array.from({ length: numBins }, (_, i) => i);
@@ -79,27 +84,6 @@ const SpadHistogram = forwardRef(({ onConcentrationUpdate }, ref) => {
       setFps(frameCountRef.current);
       frameCountRef.current = 0;
     }, 1000);
-
-    const autoConnect = async () => {
-      try {
-        if ('serial' in navigator) {
-          const allowedPorts = await navigator.serial.getPorts();
-          
-          if (allowedPorts.length > 0) {
-            console.log("Lab machine recognized! Auto-connecting...");
-            portRef.current = allowedPorts[0];
-            await portRef.current.open({ baudRate: parseInt(baudRate) });
-            setIsConnected(true);
-            keepReadingRef.current = true;
-            readLoop(); 
-          }
-        }
-      } catch (err) {
-        console.error("Auto-connect failed:", err);
-      }
-    };
-
-    autoConnect();
 
     return () => {
       clearInterval(fpsInterval);
@@ -157,17 +141,40 @@ const SpadHistogram = forwardRef(({ onConcentrationUpdate }, ref) => {
     // Pass unpacked array through the custom processing algorithm
     const algorithmicResult = processAlgorithm(bins);
 
-    // Calculate concentration from the raw bins
-    if (onConcentrationUpdate && Date.now() - lastConcentrationUpdateRef.current >= 2000) {
+    // Real-time regression prediction for every incoming sample (internal only —
+    // the UI only reflects the lower confidence bound, and only once it rises).
+    sampleCountRef.current += 1;
+    if (onConcentrationUpdate && sampleCountRef.current >= MIN_SAMPLES_FOR_PREDICTION) {
       const prediction = processFrame(bins);
-      const elapsedSeconds = (Date.now() - startTimeRef.current) / 1000;
-      lastConcentrationUpdateRef.current = Date.now();
-      onConcentrationUpdate({
-        time: elapsedSeconds,
-        concentration: prediction.concentration,
-        signal: prediction.signal,
-        status: prediction.status
-      });
+      predictionSamplesRef.current.push(prediction.concentration);
+
+      const confidence = evaluateConfidence(predictionSamplesRef.current);
+      const hasLowerBound = confidence.lowerBound !== undefined;
+      const isNewHigh =
+        hasLowerBound &&
+        (lastLowerBoundRef.current === null || confidence.lowerBound > lastLowerBoundRef.current);
+
+      // Always report a positive call even if this particular lower bound
+      // isn't a new high (it can't be missed — the run stops right after).
+      if (hasLowerBound && (isNewHigh || confidence.isSignificant)) {
+        lastLowerBoundRef.current = confidence.lowerBound;
+        const elapsedSeconds = (Date.now() - startTimeRef.current) / 1000;
+        const payload = {
+          time: elapsedSeconds,
+          concentration: confidence.lowerBound,
+          signal: prediction.signal,
+          status: prediction.status
+        };
+
+        if (confidence.isSignificant) {
+          // Positive call: stop acquiring further samples and report time-to-positive.
+          isPausedRef.current = true;
+          payload.isPositive = true;
+          payload.timeToPositive = elapsedSeconds;
+        }
+
+        onConcentrationUpdate(payload);
+      }
     }
 
     const yLimit = maxVal > 0 ? Math.ceil(maxVal * 1.15) : 100;
@@ -197,7 +204,9 @@ const SpadHistogram = forwardRef(({ onConcentrationUpdate }, ref) => {
 
                 if (byteBuffer.length >= totalFrameLen) {
                   const dataPayload = byteBuffer.slice(6, 6 + payloadLen);
-                  updatePlotWithFrame(dataPayload);
+                  if (!isPausedRef.current) {
+                    updatePlotWithFrame(dataPayload);
+                  }
                   byteBuffer = byteBuffer.slice(totalFrameLen);
                 } else {
                   break;
@@ -222,19 +231,16 @@ const SpadHistogram = forwardRef(({ onConcentrationUpdate }, ref) => {
     setIsConnected(false);
   }
 
-  const toggleConnection = async () => {
-    if (isConnected) {
-      keepReadingRef.current = false;
-      if (readerRef.current) {
-        await readerRef.current.cancel();
-      }
-      return;
-    }
+  const startConnection = async () => {
+    if (portRef.current) return;
     try {
       portRef.current = await navigator.serial.requestPort();
       await portRef.current.open({ baudRate: parseInt(baudRate) });
       setIsConnected(true);
       keepReadingRef.current = true;
+      isPausedRef.current = false;
+      // Sample placed / run started now — time-to-positive is measured from here.
+      startTimeRef.current = Date.now();
       readLoop();
     } catch (err) {
       console.error(err);
@@ -242,8 +248,29 @@ const SpadHistogram = forwardRef(({ onConcentrationUpdate }, ref) => {
     }
   };
 
+  const togglePause = (paused) => {
+    isPausedRef.current = paused;
+  };
+
+  const resetData = () => {
+    startTimeRef.current = Date.now();
+    isPausedRef.current = false;
+    sampleCountRef.current = 0;
+    predictionSamplesRef.current = [];
+    lastLowerBoundRef.current = null;
+    frameCountRef.current = 0;
+    Plotly.update(
+      'react-spad-plot',
+      { y: [new Array(numBins).fill(0)] },
+      { 'yaxis.range': [0, 100] },
+      [0],
+    ).catch(() => {});
+  };
+
   useImperativeHandle(ref, () => ({
-    toggleConnection,
+    startConnection,
+    togglePause,
+    resetData,
     isConnected,
     fps
   }));
