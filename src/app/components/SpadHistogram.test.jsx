@@ -78,12 +78,14 @@ describe('SpadHistogram run integration', () => {
       value: { requestPort: vi.fn().mockResolvedValue(port) },
     });
     const onDetectionUpdate = vi.fn();
+    const onConcentrationPoint = vi.fn();
     const onTransportChange = vi.fn();
     const ref = createRef();
     render(
       <SpadHistogram
         ref={ref}
         onDetectionUpdate={onDetectionUpdate}
+        onConcentrationPoint={onConcentrationPoint}
         onTransportChange={onTransportChange}
         onActiveTimeChange={vi.fn()}
       />,
@@ -103,6 +105,11 @@ describe('SpadHistogram run integration', () => {
       .filter((event) => event.block.timeMs > positiveCall.block.timeMs);
     expect(onTransportChange).toHaveBeenNthCalledWith(1, 'connecting');
     expect(onTransportChange).toHaveBeenCalledWith('live');
+    expect(onConcentrationPoint).toHaveBeenCalledTimes(concentrations.length);
+    expect(onConcentrationPoint).toHaveBeenLastCalledWith(expect.objectContaining({
+      time: expect.any(Number),
+      concentration: expect.any(Number),
+    }));
     expect(laterRecords.at(-1).lowerBoundUpdate.concentration)
       .toBeGreaterThan(positiveCall.lowerBoundUpdate.concentration);
     expect(laterRecords.at(-1).timeToPositiveMs).toBe(positiveCall.timeToPositiveMs);

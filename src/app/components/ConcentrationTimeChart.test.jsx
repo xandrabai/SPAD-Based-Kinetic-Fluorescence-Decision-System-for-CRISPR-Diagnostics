@@ -17,13 +17,23 @@ beforeEach(() => {
   Plotly.update.mockResolvedValue(undefined);
 });
 
-it('labels record lower bounds and draws the 30 ug/mL threshold', async () => {
+it('plots live regression concentrations against active time', async () => {
   const { rerender } = render(<ConcentrationTimeChart concentrationData={[]} />);
-  expect(screen.getByText('Lower Bound vs Time')).toBeInTheDocument();
-  expect(Plotly.newPlot.mock.calls[0][2].shapes[0]).toMatchObject({ y0: 30, y1: 30 });
+  expect(screen.getByText('Concentration vs Time')).toBeInTheDocument();
+  expect(screen.getByText('Live regression estimates')).toBeInTheDocument();
+  expect(Plotly.newPlot.mock.calls[0][2].shapes).toBeUndefined();
   expect(Plotly.update.mock.calls[0][2]['xaxis.autorange']).toBe(true);
 
-  rerender(<ConcentrationTimeChart concentrationData={[{ time: 20, concentration: 31.25 }]} />);
+  rerender(<ConcentrationTimeChart concentrationData={[
+    { time: 1, concentration: 30.5 },
+    { time: 2, concentration: 31.25 },
+  ]} />);
   await waitFor(() => expect(Plotly.update).toHaveBeenCalled());
   expect(screen.getByText('31.25 ug/mL')).toBeInTheDocument();
+  expect(Plotly.update).toHaveBeenLastCalledWith(
+    'concentration-time-plot',
+    { x: [[1, 2]], y: [[30.5, 31.25]] },
+    expect.any(Object),
+    [0],
+  );
 });

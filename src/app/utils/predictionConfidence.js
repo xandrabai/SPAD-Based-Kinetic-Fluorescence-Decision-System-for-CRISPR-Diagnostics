@@ -131,6 +131,7 @@ export function evaluateSequentialConfidence(blockMeans, lookNumber) {
   const alphaAtLook = alphaForLook(lookNumber);
   const criticalT = studentTQuantile(1 - alphaAtLook, df);
   const lowerBound = avg - criticalT * standardError;
+  const upperBound = avg + criticalT * standardError;
 
   return {
     status: 'valid',
@@ -142,6 +143,7 @@ export function evaluateSequentialConfidence(blockMeans, lookNumber) {
     pValue,
     alphaAtLook,
     lowerBound,
+    upperBound,
     isPositive: pValue < alphaAtLook && lowerBound > DETECTION_THRESHOLD_UG_ML,
   };
 }

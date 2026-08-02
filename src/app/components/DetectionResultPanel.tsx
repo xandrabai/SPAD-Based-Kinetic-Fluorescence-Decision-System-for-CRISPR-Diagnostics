@@ -1,13 +1,17 @@
 type Props = {
   result: 'neutral' | 'negative' | 'positive';
-  lowerBound: number | null;
+  interval: {
+    lowerBound: number;
+    midpoint: number;
+    upperBound: number;
+  } | null;
   blockCount: number;
   timeToPositive: number | null;
 };
 
 export default function DetectionResultPanel({
   result,
-  lowerBound,
+  interval,
   blockCount,
   timeToPositive,
 }: Props) {
@@ -42,14 +46,22 @@ export default function DetectionResultPanel({
         style={{ background: stateBackground }}
       >
         <strong className="text-sm tracking-wide" style={{ color: stateColor }}>{label}</strong>
-        <p className="mt-2 font-mono leading-none">
-          <span className="text-4xl font-bold" style={{ color: stateColor }}>
-            {lowerBound === null ? '--' : lowerBound.toFixed(2)}
-          </span>{' '}
-          <span className="text-sm text-[#8fa1b5]">ug/mL</span>
-        </p>
-        <p className="mt-2 text-xs text-[#8fa1b5]">Lower-bound concentration</p>
-        {lowerBound === null && result !== 'neutral' ? (
+        <div className="mt-3 grid w-full max-w-md grid-cols-3 gap-2 font-mono">
+          {[
+            ['Lower bound', interval?.lowerBound],
+            ['Midpoint', interval?.midpoint],
+            ['Upper bound', interval?.upperBound],
+          ].map(([name, value]) => (
+            <div key={name as string}>
+              <p className="text-[10px] text-[#8fa1b5]">{name}</p>
+              <p className="mt-1 text-xl font-bold" style={{ color: stateColor }}>
+                {typeof value === 'number' ? value.toFixed(2) : '--'}
+              </p>
+            </div>
+          ))}
+        </div>
+        <p className="mt-1 text-[10px] text-[#8fa1b5]">ug/mL</p>
+        {interval === null && result !== 'neutral' ? (
           <p className="mt-1 font-mono text-xs text-[#8fa1b5]">{blockCount} / 10 blocks</p>
         ) : null}
         {result === 'positive' && timeToPositive !== null ? (

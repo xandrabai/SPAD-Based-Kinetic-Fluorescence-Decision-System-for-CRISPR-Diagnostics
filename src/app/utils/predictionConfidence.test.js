@@ -22,6 +22,9 @@ describe('alpha-spent sequential confidence', () => {
     expect(result.status).toBe('valid');
     expect(result.alphaAtLook).toBe(0.025);
     expect(result.lowerBound).toBeGreaterThan(30);
+    expect(result.upperBound).toBeCloseTo(
+      result.mean + (result.mean - result.lowerBound),
+    );
     expect(result.isPositive).toBe(true);
   });
 

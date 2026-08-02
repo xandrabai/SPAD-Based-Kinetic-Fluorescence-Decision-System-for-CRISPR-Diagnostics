@@ -10,6 +10,7 @@ const histogram = vi.hoisted(() => ({
   togglePause: vi.fn(),
   resetData: vi.fn().mockResolvedValue(undefined),
 }));
+const concentrationChart = vi.hoisted(() => ({ props: null as any }));
 
 vi.mock('./components/SpadHistogram', async () => {
   const ReactModule = await import('react');
@@ -27,7 +28,10 @@ vi.mock('./components/SpadHistogram', async () => {
 });
 
 vi.mock('./components/ConcentrationTimeChart', () => ({
-  default: () => <div data-testid="lower-bound-chart" />,
+  default: (props: any) => {
+    concentrationChart.props = props;
+    return <div data-testid="concentration-chart" />;
+  },
 }));
 
 vi.mock('recharts', async () => {
@@ -68,6 +72,7 @@ it('starts negative and preserves TTP while later records update', async () => {
     block: { timeMs: 20_000, concentration: 50, frameCount: 8 },
     blockCount: 10,
     lowerBoundUpdate: { time: 20, concentration: 31 },
+    intervalUpdate: { time: 20, lowerBound: 31, midpoint: 32, upperBound: 33 },
     positiveJustLatched: true,
     isPositive: true,
     timeToPositiveMs: 20_000,
@@ -79,12 +84,20 @@ it('starts negative and preserves TTP while later records update', async () => {
     block: { timeMs: 30_000, concentration: 60, frameCount: 8 },
     blockCount: 15,
     lowerBoundUpdate: { time: 30, concentration: 35 },
+    intervalUpdate: { time: 30, lowerBound: 35, midpoint: 36, upperBound: 37 },
     positiveJustLatched: false,
     isPositive: true,
     timeToPositiveMs: 20_000,
   }));
   expect(screen.getByText('35.00')).toBeInTheDocument();
+  expect(screen.getByText('36.00')).toBeInTheDocument();
+  expect(screen.getByText('37.00')).toBeInTheDocument();
   expect(screen.getByText('Time to positive: 00:20')).toBeInTheDocument();
+
+  act(() => histogram.props.onConcentrationPoint({ time: 1.5, concentration: 42.25 }));
+  expect(concentrationChart.props.concentrationData).toEqual([
+    { time: 1.5, concentration: 42.25 },
+  ]);
 });
 
 it('disables RUN when Web Serial is unavailable', () => {

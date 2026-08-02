@@ -44,6 +44,14 @@ export function ingestCompletedBlock(state, block, evaluator = evaluateSequentia
     lowerBoundUpdate: isRecord
       ? { time: block.timeMs / 1_000, concentration: evidence.lowerBound }
       : null,
+    intervalUpdate: isRecord
+      ? {
+        time: block.timeMs / 1_000,
+        lowerBound: evidence.lowerBound,
+        midpoint: (evidence.lowerBound + evidence.upperBound) / 2,
+        upperBound: evidence.upperBound,
+      }
+      : null,
     positiveJustLatched,
     isPositive,
     timeToPositiveMs,

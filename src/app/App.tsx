@@ -33,6 +33,12 @@ type ConcentrationPoint = {
 
 type ThirtySecondAveragePoint = ConcentrationPoint;
 
+type ConfidenceInterval = {
+  lowerBound: number;
+  midpoint: number;
+  upperBound: number;
+};
+
 type TransportState = 'ready' | 'connecting' | 'live' | 'paused' | 'error';
 type ResultState = 'neutral' | 'negative' | 'positive';
 
@@ -44,6 +50,7 @@ type DetectionEvent = {
   };
   blockCount: number;
   lowerBoundUpdate: ConcentrationPoint | null;
+  intervalUpdate: (ConfidenceInterval & { time: number }) | null;
   positiveJustLatched: boolean;
   timeToPositiveMs: number | null;
 };
@@ -60,7 +67,8 @@ export default function App() {
   const [activeElapsedMs, setActiveElapsedMs] = useState(0);
   const [blockCount, setBlockCount] = useState(0);
   const [timeToPositive, setTimeToPositive] = useState<number | null>(null);
-  const [lowerBoundData, setLowerBoundData] = useState<ConcentrationPoint[]>([]);
+  const [concentrationData, setConcentrationData] = useState<ConcentrationPoint[]>([]);
+  const [publishedInterval, setPublishedInterval] = useState<ConfidenceInterval | null>(null);
   const [blockMeanData, setBlockMeanData] = useState<ConcentrationPoint[]>([]);
   const spadRef = useRef<SpadHandle | null>(null);
   const serialSupported = (
@@ -91,8 +99,9 @@ export default function App() {
       ...points,
       { time: event.block.timeMs / 1_000, concentration: event.block.concentration },
     ]);
-    if (event.lowerBoundUpdate) {
-      setLowerBoundData((points) => [...points, event.lowerBoundUpdate as ConcentrationPoint]);
+    if (event.intervalUpdate) {
+      const { lowerBound, midpoint, upperBound } = event.intervalUpdate;
+      setPublishedInterval({ lowerBound, midpoint, upperBound });
     }
     if (event.positiveJustLatched && event.timeToPositiveMs !== null) {
       setResult('positive');
@@ -106,7 +115,8 @@ export default function App() {
       setActiveElapsedMs(0);
       setBlockCount(0);
       setTimeToPositive(null);
-      setLowerBoundData([]);
+      setConcentrationData([]);
+      setPublishedInterval(null);
       setBlockMeanData([]);
       void spadRef.current?.startConnection();
       return;
@@ -123,7 +133,8 @@ export default function App() {
     setActiveElapsedMs(0);
     setBlockCount(0);
     setTimeToPositive(null);
-    setLowerBoundData([]);
+    setConcentrationData([]);
+    setPublishedInterval(null);
     setBlockMeanData([]);
   };
 
@@ -218,12 +229,15 @@ export default function App() {
             <SpadHistogram
               ref={spadRef}
               onDetectionUpdate={handleDetectionUpdate}
+              onConcentrationPoint={(point: ConcentrationPoint) => {
+                setConcentrationData((points) => [...points.slice(-99), point]);
+              }}
               onTransportChange={setTransport}
               onActiveTimeChange={setActiveElapsedMs}
             />
           </div>
           <div className="min-h-[18rem] flex-1">
-            <ConcentrationTimeChart concentrationData={lowerBoundData} />
+            <ConcentrationTimeChart concentrationData={concentrationData} />
           </div>
         </div>
 
@@ -231,7 +245,7 @@ export default function App() {
           <div className="min-h-[14rem] flex-1">
             <DetectionResultPanel
               result={result}
-              lowerBound={lowerBoundData.at(-1)?.concentration ?? null}
+              interval={publishedInterval}
               blockCount={blockCount}
               timeToPositive={timeToPositive}
             />

@@ -34,6 +34,7 @@ const NUM_BINS = 3_840;
 
 const SpadHistogram = forwardRef(({
   onDetectionUpdate,
+  onConcentrationPoint,
   onTransportChange,
   onActiveTimeChange,
 }, ref) => {
@@ -156,6 +157,9 @@ const SpadHistogram = forwardRef(({
     const algorithmicResult = processAlgorithm(bins);
     if (Number.isFinite(transition.prediction?.signal)) {
       setLatestSignal(transition.prediction.signal);
+    }
+    if (transition.concentrationPoint) {
+      onConcentrationPoint?.(transition.concentrationPoint);
     }
     transition.completedEvents.forEach((event) => onDetectionUpdate?.(event));
 

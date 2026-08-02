@@ -38,4 +38,17 @@ it('rejects malformed and out-of-range payloads', () => {
   expect(transition.status).toBe('out_of_range');
   expect(transition.state.malformedFrameCount).toBe(1);
   expect(transition.state.outOfRangeFrameCount).toBe(1);
+  expect(transition.concentrationPoint).toBeNull();
+});
+
+it('emits a timestamped point estimate for every valid frame', () => {
+  const transition = processRealtimePayload(
+    createRealtimePipeline(),
+    payloadForConcentration(50),
+    1_250,
+  );
+  expect(transition.concentrationPoint).toEqual({
+    time: 1.25,
+    concentration: transition.prediction.concentration,
+  });
 });

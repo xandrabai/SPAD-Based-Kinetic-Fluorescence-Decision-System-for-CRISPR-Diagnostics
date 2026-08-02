@@ -20,6 +20,7 @@ export function processRealtimePayload(state, payload, activeElapsedMs) {
       status: 'invalid_frame',
       bins: null,
       prediction: null,
+      concentrationPoint: null,
       completedEvents: [],
     };
   }
@@ -35,6 +36,7 @@ export function processRealtimePayload(state, payload, activeElapsedMs) {
       status: prediction.status === 'invalid' ? 'invalid_frame' : 'out_of_range',
       bins,
       prediction,
+      concentrationPoint: null,
       completedEvents: [],
     };
   }
@@ -56,6 +58,10 @@ export function processRealtimePayload(state, payload, activeElapsedMs) {
     status: 'valid',
     bins,
     prediction,
+    concentrationPoint: {
+      time: activeElapsedMs / 1_000,
+      concentration: prediction.concentration,
+    },
     completedEvents,
   };
 }
