@@ -1,41 +1,28 @@
-import { useState, useEffect, useRef } from "react";
+import { useMemo, useRef, useState } from 'react';
+import { Activity, Clock, Pause, Play, RotateCcw } from 'lucide-react';
 import {
-  Activity,
-  Play,
-  Clock,
-  CheckCircle2,
-  Pause,
-  RefreshCw,
-} from "lucide-react";
-import {
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
   XAxis,
   YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  BarChart,
-  Bar,
-  ReferenceLine,
-  LineChart,
-  Line,
-} from "recharts";
-import SpadHistogram from "./components/SpadHistogram";
-import ConcentrationTimeChart from "./components/ConcentrationTimeChart";
+} from 'recharts';
+import ConcentrationTimeChart from './components/ConcentrationTimeChart';
+import DetectionResultPanel from './components/DetectionResultPanel';
+import SpadHistogram from './components/SpadHistogram';
 
 const C = {
-  bg: "#0b0f14",
-  panel: "#111720",
-  border: "#1e2a38",
-  accent: "#00d4aa",
-  accentDim: "#00d4aa22",
-  accentBright: "#00ffcc",
-  blue: "#4f9eff",
-  blueDim: "#4f9eff18",
-  orange: "#ff8c42",
-  yellow: "#f5c518",
-  text: "#e2eaf4",
-  muted: "#6b7a8d",
-  dimText: "#3d4f63",
+  bg: '#0b0f14',
+  panel: '#111720',
+  border: '#1e2a38',
+  accent: '#00d4aa',
+  accentDim: '#00d4aa22',
+  orange: '#ff9b57',
+  text: '#e2eaf4',
+  muted: '#8fa1b5',
+  dimText: '#536579',
 };
 
 type ConcentrationPoint = {
@@ -43,247 +30,219 @@ type ConcentrationPoint = {
   concentration: number;
 };
 
-type ConcentrationUpdatePayload = ConcentrationPoint & {
-  isPositive?: boolean;
-  timeToPositive?: number;
+type ThirtySecondAveragePoint = ConcentrationPoint;
+
+type TransportState = 'ready' | 'connecting' | 'live' | 'paused' | 'error';
+type ResultState = 'neutral' | 'negative' | 'positive';
+
+type DetectionEvent = {
+  block: {
+    timeMs: number;
+    concentration: number;
+    frameCount: number;
+  };
+  blockCount: number;
+  lowerBoundUpdate: ConcentrationPoint | null;
+  positiveJustLatched: boolean;
+  timeToPositiveMs: number | null;
 };
 
-function formatDuration(totalSeconds: number) {
-  const m = Math.floor(totalSeconds / 60);
-  const s = Math.floor(totalSeconds % 60);
-  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-}
-
-type ThirtySecondAveragePoint = {
-  time: number;
-  concentration: number;
+type SpadHandle = {
+  startConnection: () => Promise<void>;
+  togglePause: (paused: boolean) => void;
+  resetData: () => Promise<void>;
 };
 
-const MAX_CONCENTRATION_POINTS = 100;
+export default function App() {
+  const [transport, setTransport] = useState<TransportState>('ready');
+  const [result, setResult] = useState<ResultState>('neutral');
+  const [activeElapsedMs, setActiveElapsedMs] = useState(0);
+  const [blockCount, setBlockCount] = useState(0);
+  const [timeToPositive, setTimeToPositive] = useState<number | null>(null);
+  const [lowerBoundData, setLowerBoundData] = useState<ConcentrationPoint[]>([]);
+  const [blockMeanData, setBlockMeanData] = useState<ConcentrationPoint[]>([]);
+  const spadRef = useRef<SpadHandle | null>(null);
+  const serialSupported = typeof navigator !== 'undefined'
+    && (navigator as Navigator & { serial?: unknown }).serial !== undefined;
 
-// ── Data generators ───────────────────────────────────────────────────────────
-function generateHistogram() {
-  return Array.from({ length: 48 }, (_, i) => ({
-    bin: i * 20,
-    count: Math.round(
-      Math.max(0, 90 * Math.exp(-0.5 * ((i - 22) / 6) ** 2) + Math.random() * 10)
-    ),
-  }));
-}
+  const thirtySecondAverages = useMemo(() => {
+    const completedWindowEnd = Math.floor(activeElapsedMs / 30_000) * 30;
+    const averages: ThirtySecondAveragePoint[] = [];
+    for (let windowEnd = 30; windowEnd <= completedWindowEnd; windowEnd += 30) {
+      const points = blockMeanData.filter(
+        (point) => point.time > windowEnd - 30 && point.time <= windowEnd,
+      );
+      if (points.length > 0) {
+        averages.push({
+          time: windowEnd,
+          concentration: points.reduce((sum, point) => sum + point.concentration, 0) / points.length,
+        });
+      }
+    }
+    return averages;
+  }, [activeElapsedMs, blockMeanData]);
 
+  const handleDetectionUpdate = (event: DetectionEvent) => {
+    setBlockCount(event.blockCount);
+    setBlockMeanData((points) => [
+      ...points,
+      { time: event.block.timeMs / 1_000, concentration: event.block.concentration },
+    ]);
+    if (event.lowerBoundUpdate) {
+      setLowerBoundData((points) => [...points, event.lowerBoundUpdate as ConcentrationPoint]);
+    }
+    if (event.positiveJustLatched && event.timeToPositiveMs !== null) {
+      setResult('positive');
+      setTimeToPositive(event.timeToPositiveMs / 1_000);
+    }
+  };
 
-// ── Shared UI ─────────────────────────────────────────────────────────────────
-function PanelHeader({
-  icon,
-  title,
-  children,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  children?: React.ReactNode;
-}) {
+  const handleRunPauseClick = () => {
+    if (result === 'neutral') {
+      setResult('negative');
+      setActiveElapsedMs(0);
+      setBlockCount(0);
+      setTimeToPositive(null);
+      setLowerBoundData([]);
+      setBlockMeanData([]);
+      void spadRef.current?.startConnection();
+      return;
+    }
+
+    const shouldPause = transport === 'live';
+    spadRef.current?.togglePause(shouldPause);
+  };
+
+  const handleResetClick = async () => {
+    await spadRef.current?.resetData();
+    setTransport('ready');
+    setResult('neutral');
+    setActiveElapsedMs(0);
+    setBlockCount(0);
+    setTimeToPositive(null);
+    setLowerBoundData([]);
+    setBlockMeanData([]);
+  };
+
+  const runLabel = result === 'neutral'
+    ? 'RUN'
+    : transport === 'live'
+      ? 'Pause'
+      : transport === 'paused'
+        ? 'Resume'
+        : 'RUN';
+  const runDisabled = !serialSupported || transport === 'connecting' || transport === 'error';
+  const transportColor = transport === 'live'
+    ? C.accent
+    : transport === 'error'
+      ? C.orange
+      : C.muted;
+
   return (
-    <div
-      className="flex items-center justify-between px-3 py-2 border-b shrink-0"
-      style={{ borderColor: C.border }}
-    >
-      <div className="flex items-center gap-2">
-        <span style={{ color: C.accent }}>{icon}</span>
-        <span className="text-xs font-semibold tracking-wide" style={{ color: C.text }}>
-          {title}
-        </span>
-      </div>
-      <div className="flex items-center gap-2">{children}</div>
-    </div>
-  );
-}
-
-function Pill({
-  children,
-  active,
-  onClick,
-}: {
-  children: React.ReactNode;
-  active?: boolean;
-  onClick?: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className="px-2 py-0.5 rounded text-xs font-medium transition-colors"
-      style={{ background: active ? C.accent : C.border, color: active ? C.bg : C.muted }}
-    >
-      {children}
-    </button>
-  );
-}
-
-// ── Signal Histogram Panel ────────────────────────────────────────────────────
-function SignalHistogramPanel() {
-  const [histData] = useState(generateHistogram);
-  const [view, setView] = useState<"raw" | "norm">("raw");
-
-  const displayData =
-    view === "norm"
-      ? histData.map((d) => ({ ...d, count: parseFloat((d.count / 90).toFixed(3)) }))
-      : histData;
-
-  const peak = histData.reduce((a, b) => (b.count > a.count ? b : a), histData[0]);
-
-  return (
-    <div
-      className="flex flex-col rounded-lg overflow-hidden h-full"
-      style={{ background: C.panel, border: `1px solid ${C.border}` }}
-    >
-      <PanelHeader icon={<Activity size={13} />} title="Signal Histogram">
-        <span className="text-[10px]" style={{ color: C.muted, fontFamily: "JetBrains Mono, monospace" }}>
-          100 ps/bin
-        </span>
-        <Pill active={view === "raw"} onClick={() => setView("raw")}>Raw</Pill>
-        <Pill active={view === "norm"} onClick={() => setView("norm")}>Norm</Pill>
-      </PanelHeader>
-
-      <div
-        className="flex items-center gap-3 px-3 py-1.5 text-[10px] border-b shrink-0"
-        style={{ borderColor: C.border, color: C.muted, fontFamily: "JetBrains Mono, monospace" }}
+    <div className="flex min-h-screen flex-col" style={{ background: C.bg, color: C.text, fontFamily: 'Inter, sans-serif' }}>
+      <header
+        className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b px-4 py-2"
+        style={{ borderColor: C.border, background: C.panel }}
       >
-        <span>LED: 465 nm</span>
-      </div>
-
-      <div className="flex-1 px-2 pt-3 pb-1 min-h-0">
-        <ResponsiveContainer width="100%" height="100%">
-          <BarChart
-            data={displayData}
-            margin={{ top: 4, right: 8, left: -18, bottom: 20 }}
-            barCategoryGap="4%"
+        <div className="flex items-center gap-3">
+          <div
+            className="flex h-7 w-7 items-center justify-center rounded"
+            style={{ background: C.accentDim, border: `1px solid ${C.accent}` }}
           >
-            <defs>
-              <linearGradient id="barGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor={C.accent} stopOpacity={0.9} />
-                <stop offset="100%" stopColor={C.accent} stopOpacity={0.3} />
-              </linearGradient>
-            </defs>
-            <CartesianGrid strokeDasharray="3 3" stroke={C.border} vertical={false} />
-            <XAxis
-              dataKey="bin"
-              tick={{ fill: C.muted, fontSize: 9, fontFamily: "JetBrains Mono, monospace" }}
-              axisLine={{ stroke: C.border }}
-              tickLine={false}
-              tickFormatter={(v) => (v % 200 === 0 ? v : "")}
-              label={{
-                value: "Channel (100 ps/bin)",
-                position: "insideBottom",
-                fill: C.muted,
-                fontSize: 9,
-                dy: 18,
-              }}
-            />
-            <YAxis
-              tick={{ fill: C.muted, fontSize: 9, fontFamily: "JetBrains Mono, monospace" }}
-              axisLine={false}
-              tickLine={false}
-              label={{
-                value: view === "norm" ? "Norm." : "Counts",
-                angle: -90,
-                position: "insideLeft",
-                fill: C.muted,
-                fontSize: 9,
-                dx: 14,
-              }}
-            />
-            <Tooltip
-              cursor={{ fill: `${C.accent}11` }}
-              contentStyle={{
-                background: C.panel,
-                border: `1px solid ${C.border}`,
-                borderRadius: 6,
-                fontSize: 10,
-                color: C.text,
-              }}
-              formatter={(v: number) => [view === "norm" ? v.toFixed(3) : v, "Count"]}
-              labelFormatter={(l) => `Channel ${l}`}
-            />
-            <Bar dataKey="count" fill="url(#barGrad)" radius={[2, 2, 0, 0]} name="Count" />
-            <ReferenceLine x={peak.bin} stroke={C.yellow} strokeDasharray="4 2" strokeWidth={1} />
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
-
-      <div
-        className="flex items-center justify-between px-3 py-2 border-t shrink-0"
-        style={{ borderColor: C.border }}
-      >
-        <span className="text-[10px]" style={{ color: C.muted }}>
-          Mean Background Connected Integrated Counts per frame:
-        </span>
-        <span
-          className="text-[11px] font-semibold ml-2"
-          style={{ color: C.text, fontFamily: "JetBrains Mono, monospace", whiteSpace: "nowrap" }}
-        >
-          {(2418).toLocaleString()}
-        </span>
-      </div>
-    </div>
-  );
-}
-
-function FinalResultPanel({
-  concentration,
-  isPositive,
-  timeToPositive,
-}: {
-  concentration?: number;
-  isPositive: boolean;
-  timeToPositive: number | null;
-}) {
-  return (
-    <div
-      className="flex flex-col rounded-lg overflow-hidden h-full"
-      style={{ background: C.panel, border: `1px solid ${C.border}` }}
-    >
-      <PanelHeader icon={<CheckCircle2 size={13} />} title="Detection Result">
-        <span className="text-[10px]" style={{ color: C.muted, fontFamily: "JetBrains Mono, monospace" }}>
-          Live result
-        </span>
-      </PanelHeader>
-      <div
-        className="flex-1 flex flex-col items-center justify-center px-4"
-        style={{ background: isPositive ? "#0e1a14" : "#1a1114" }}
-      >
-        <span
-          className="text-sm font-bold tracking-wide"
-          style={{ color: isPositive ? C.accentBright : C.orange }}
-        >
-          {isPositive ? "POSITIVE" : "NEGATIVE"}
-        </span>
-        <div className="flex items-end gap-1.5 mt-2 leading-none">
-          <span className="text-4xl font-bold" style={{ color: isPositive ? C.accentBright : C.muted, fontFamily: "JetBrains Mono, monospace" }}>
-            {concentration === undefined ? "--" : concentration.toFixed(2)}
-          </span>
-          <span className="text-sm font-semibold mb-0.5" style={{ color: isPositive ? C.accent : C.muted }}>
-            µg/ml
-          </span>
+            <Activity size={14} aria-hidden="true" style={{ color: C.accent }} />
+          </div>
+          <div>
+            <h1 className="text-xs font-semibold leading-tight" style={{ color: C.text }}>
+              SPAD-Based Kinetic Fluorescence
+            </h1>
+            <p className="text-[10px] leading-tight" style={{ color: C.muted }}>
+              CRISPR Pathogen Detector · sequential lower-bound decision
+            </p>
+          </div>
         </div>
-        {isPositive && timeToPositive !== null ? (
-          <span className="text-[10px] mt-2" style={{ color: C.muted, fontFamily: "JetBrains Mono, monospace" }}>
-            Time to positive: {formatDuration(timeToPositive)}
-          </span>
-        ) : (
-          <span className="text-[10px] mt-2" style={{ color: C.muted }}>
-            Latest real-time concentration
-          </span>
-        )}
-      </div>
+
+        <div className="flex flex-wrap items-center justify-end gap-3">
+          {!serialSupported ? (
+            <p role="alert" className="text-xs text-[#ffb37a]">
+              Web Serial requires Chrome or Edge.
+            </p>
+          ) : null}
+          <div className="flex items-center gap-1.5">
+            <span
+              aria-hidden="true"
+              className={`h-1.5 w-1.5 rounded-full ${transport === 'live' ? 'animate-pulse' : ''}`}
+              style={{ background: transportColor }}
+            />
+            <span
+              role="status"
+              aria-live="polite"
+              className="text-xs font-semibold"
+              style={{ color: transportColor }}
+            >
+              {transport.toUpperCase()}
+            </span>
+          </div>
+          <div className="flex items-center gap-1" style={{ color: C.muted }}>
+            <Clock size={12} aria-hidden="true" />
+            <span className="font-mono text-xs">{formatDuration(activeElapsedMs / 1_000)}</span>
+          </div>
+          <button
+            type="button"
+            className="flex items-center gap-1.5 rounded px-2.5 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+            style={{ background: C.border, color: result === 'neutral' ? C.dimText : C.text }}
+            onClick={() => void handleResetClick()}
+            disabled={result === 'neutral' && transport === 'ready'}
+          >
+            <RotateCcw size={12} aria-hidden="true" />
+            Reset
+          </button>
+          <button
+            type="button"
+            className="flex items-center gap-1.5 rounded px-3 py-1.5 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+            style={{ background: C.accent, color: C.bg }}
+            onClick={handleRunPauseClick}
+            disabled={runDisabled}
+          >
+            {transport === 'live' ? <Pause size={12} aria-hidden="true" /> : <Play size={12} aria-hidden="true" />}
+            {runLabel}
+          </button>
+        </div>
+      </header>
+
+      <main className="dashboard-grid min-h-0 flex-1 gap-3 p-3">
+        <div className="flex min-h-0 flex-col gap-3">
+          <div className="min-h-[18rem] flex-1">
+            <SpadHistogram
+              ref={spadRef}
+              onDetectionUpdate={handleDetectionUpdate}
+              onTransportChange={setTransport}
+              onActiveTimeChange={setActiveElapsedMs}
+            />
+          </div>
+          <div className="min-h-[18rem] flex-1">
+            <ConcentrationTimeChart concentrationData={lowerBoundData} />
+          </div>
+        </div>
+
+        <div className="flex min-h-0 flex-col gap-3">
+          <div className="min-h-[14rem] flex-1">
+            <DetectionResultPanel
+              result={result}
+              lowerBound={lowerBoundData.at(-1)?.concentration ?? null}
+              blockCount={blockCount}
+              timeToPositive={timeToPositive}
+            />
+          </div>
+          <div className="min-h-[20rem] flex-[2]">
+            <BlockMeanAveragePanel averageData={thirtySecondAverages} />
+          </div>
+        </div>
+      </main>
     </div>
   );
 }
 
-// ── 30-second Concentration Average Panel ─────────────────────────────────────
-function ConcentrationPanel({
-  averageData,
-}: {
-  averageData: ThirtySecondAveragePoint[];
-}) {
+function BlockMeanAveragePanel({ averageData }: { averageData: ThirtySecondAveragePoint[] }) {
   const xAxisEnd = Math.max(120, averageData.at(-1)?.time ?? 0);
   const xAxisTicks = Array.from(
     { length: Math.floor(xAxisEnd / 30) + 1 },
@@ -291,29 +250,23 @@ function ConcentrationPanel({
   );
 
   return (
-    <div
-      className="flex flex-col rounded-lg overflow-hidden h-full"
+    <section
+      aria-labelledby="block-mean-average-title"
+      className="flex h-full flex-col overflow-hidden rounded-lg"
       style={{ background: C.panel, border: `1px solid ${C.border}` }}
     >
-      <PanelHeader icon={<Activity size={13} />} title="30 s Average Concentration">
-        <span
-          className="text-[10px]"
-          style={{ color: C.muted, fontFamily: "JetBrains Mono, monospace" }}
-        >
-          Complete windows only
-        </span>
-      </PanelHeader>
-
-      <div
-        className="flex items-center justify-between px-3 py-1.5 text-[10px] border-b shrink-0"
-        style={{ borderColor: C.border, color: C.muted, fontFamily: "JetBrains Mono, monospace" }}
-      >
+      <header className="flex items-center justify-between border-b px-3 py-2" style={{ borderColor: C.border }}>
+        <h2 id="block-mean-average-title" className="text-xs font-semibold" style={{ color: C.text }}>
+          30 s Block-Mean Average
+        </h2>
+        <span className="font-mono text-[10px]" style={{ color: C.muted }}>Complete windows only</span>
+      </header>
+      <div className="flex items-center justify-between border-b px-3 py-1.5 font-mono text-[10px]" style={{ borderColor: C.border, color: C.muted }}>
         <span>Window: 30 s</span>
         <span>Points: {averageData.length}</span>
       </div>
-
-      <div className="flex-1 px-2 pt-3 pb-2 min-h-0">
-        <ResponsiveContainer width="100%" height="100%">
+      <div className="min-h-0 flex-1 px-2 pb-2 pt-3">
+        <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={180}>
           <LineChart data={averageData} margin={{ top: 4, right: 12, left: 12, bottom: 20 }}>
             <CartesianGrid strokeDasharray="3 3" stroke={C.border} vertical={false} />
             <XAxis
@@ -321,219 +274,35 @@ function ConcentrationPanel({
               type="number"
               domain={[0, xAxisEnd]}
               ticks={xAxisTicks}
-              tick={{ fill: C.muted, fontSize: 9, fontFamily: "JetBrains Mono, monospace" }}
+              tick={{ fill: C.muted, fontSize: 9, fontFamily: 'JetBrains Mono, monospace' }}
               axisLine={{ stroke: C.border }}
               tickLine={false}
-              label={{ value: "Time (s)", position: "insideBottom", fill: C.muted, fontSize: 9, dy: 18 }}
+              label={{ value: 'Active time (s)', position: 'insideBottom', fill: C.muted, fontSize: 9, dy: 18 }}
             />
             <YAxis
               type="number"
               domain={[0, 100]}
               ticks={[0, 25, 50, 75, 100]}
-              tick={{ fill: C.muted, fontSize: 9, fontFamily: "JetBrains Mono, monospace" }}
+              tick={{ fill: C.muted, fontSize: 9, fontFamily: 'JetBrains Mono, monospace' }}
               axisLine={false}
               tickLine={false}
-              label={{ value: "Avg. concentration (µg/ml)", angle: -90, position: "insideLeft", fill: C.muted, fontSize: 9, dx: 14 }}
+              label={{ value: 'Block mean (ug/mL)', angle: -90, position: 'insideLeft', fill: C.muted, fontSize: 9, dx: 14 }}
             />
             <Tooltip
               contentStyle={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 10, color: C.text }}
-              formatter={(value: number) => [value.toFixed(2), "Average concentration"]}
+              formatter={(value: number) => [value.toFixed(2), 'Average block mean']}
               labelFormatter={(time) => `Window ending at ${time} s`}
             />
             <Line type="monotone" dataKey="concentration" stroke={C.orange} strokeWidth={2.5} dot={{ r: 4, fill: C.orange }} activeDot={{ r: 5 }} />
           </LineChart>
         </ResponsiveContainer>
       </div>
-    </div>
+    </section>
   );
 }
 
-// ── Main App ──────────────────────────────────────────────────────────────────
-export default function App() {
-  const [elapsed, setElapsed] = useState({ m: 22, s: 14 });
-  const [hasStarted, setHasStarted] = useState(false);
-  const [isPaused, setIsPaused] = useState(false);
-  const [measurementState, setMeasurementState] = useState<{
-    concentrationDataset: ConcentrationPoint[];
-    thirtySecondAverages: ThirtySecondAveragePoint[];
-  }>({ concentrationDataset: [], thirtySecondAverages: [] });
-  const [isPositive, setIsPositive] = useState(false);
-  const [timeToPositive, setTimeToPositive] = useState<number | null>(null);
-  const spadRef = useRef<any>(null);
-
-  useEffect(() => {
-    const t = setInterval(() => {
-      setElapsed((e) => {
-        const s = e.s + 1 >= 60 ? 0 : e.s + 1;
-        const m = e.s + 1 >= 60 ? e.m + 1 : e.m;
-        return { m, s };
-      });
-    }, 1000);
-    return () => clearInterval(t);
-  }, []);
-
-  const handleRunPauseClick = () => {
-    if (!hasStarted) {
-      setHasStarted(true);
-      setIsPaused(false);
-      spadRef.current?.startConnection();
-      return;
-    }
-    const nextPaused = !isPaused;
-    setIsPaused(nextPaused);
-    spadRef.current?.togglePause(nextPaused);
-  };
-
-  const handleRefreshClick = () => {
-    setMeasurementState({ concentrationDataset: [], thirtySecondAverages: [] });
-    setElapsed({ m: 0, s: 0 });
-    setIsPositive(false);
-    setTimeToPositive(null);
-    setIsPaused(false);
-    spadRef.current?.resetData();
-  };
-
-  const handleConcentrationUpdate = ({
-    time,
-    concentration,
-    isPositive: positiveCall,
-    timeToPositive: elapsedAtPositive,
-  }: ConcentrationUpdatePayload) => {
-    if (positiveCall) {
-      setIsPositive(true);
-      setTimeToPositive(elapsedAtPositive ?? time);
-      setIsPaused(true);
-    }
-    setMeasurementState(({ concentrationDataset, thirtySecondAverages }) => {
-      const nextDataset = [
-        ...concentrationDataset.slice(-(MAX_CONCENTRATION_POINTS - 1)),
-        { time, concentration },
-      ];
-      const lastWindowEnd = thirtySecondAverages.at(-1)?.time ?? 0;
-      const completedWindowEnd = Math.floor(time / 30) * 30;
-      const newAverages: ThirtySecondAveragePoint[] = [];
-
-      for (let windowEnd = lastWindowEnd + 30; windowEnd <= completedWindowEnd; windowEnd += 30) {
-        const windowPoints = nextDataset.filter(
-          (point) => point.time > windowEnd - 30 && point.time <= windowEnd,
-        );
-        if (windowPoints.length > 0) {
-          newAverages.push({
-            time: windowEnd,
-            concentration: windowPoints.reduce((sum, point) => sum + point.concentration, 0) / windowPoints.length,
-          });
-        }
-      }
-
-      return {
-        concentrationDataset: nextDataset,
-        thirtySecondAverages: [...thirtySecondAverages, ...newAverages],
-      };
-    });
-  };
-
-  return (
-    <div
-      className="h-screen flex flex-col"
-      style={{ background: C.bg, color: C.text, fontFamily: "Inter, sans-serif" }}
-    >
-      {/* Header */}
-      <header
-        className="flex items-center justify-between px-4 py-2 border-b shrink-0"
-        style={{ borderColor: C.border, background: C.panel }}
-      >
-        <div className="flex items-center gap-3">
-          <div
-            className="w-6 h-6 rounded flex items-center justify-center"
-            style={{ background: C.accentDim, border: `1px solid ${C.accent}` }}
-          >
-            <Activity size={13} style={{ color: C.accent }} />
-          </div>
-          <div>
-            <p className="text-xs font-semibold leading-tight" style={{ color: C.text }}>
-              SPAD-Based Kinetic Fluorescence
-            </p>
-            <p className="text-[10px] leading-tight" style={{ color: C.muted }}>
-              CRISPR Pathogen Detector · v2.4.1
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-1.5">
-            <span
-              className={`w-1.5 h-1.5 rounded-full ${!isPaused && hasStarted ? "animate-pulse" : ""}`}
-              style={{ background: !hasStarted || isPaused ? C.muted : C.accent }}
-            />
-            <span className="text-xs" style={{ color: !hasStarted || isPaused ? C.muted : C.accent }}>
-              {!hasStarted ? "Ready" : isPaused ? "Paused" : "Live"}
-            </span>
-          </div>
-          <div className="flex items-center gap-1" style={{ color: C.muted }}>
-            <Clock size={11} />
-            <span className="text-xs" style={{ fontFamily: "JetBrains Mono, monospace" }}>
-              {String(elapsed.m).padStart(2, "0")}:{String(elapsed.s).padStart(2, "0")}
-            </span>
-          </div>
-          <span
-            className="text-xs"
-            style={{ color: C.muted, fontFamily: "JetBrains Mono, monospace" }}
-          >
-            35.4k sp/s
-          </span>
-          <button
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium transition-colors disabled:cursor-not-allowed"
-            style={{ background: hasStarted ? C.border : "#18212c", color: hasStarted ? C.text : C.dimText }}
-            onClick={handleRefreshClick}
-            disabled={!hasStarted}
-          >
-            <RefreshCw size={11} />
-            Refresh
-          </button>
-          <button
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-semibold transition-colors"
-            style={{
-              background: C.accent,
-              color: C.bg,
-            }}
-            onClick={handleRunPauseClick}
-          >
-            {hasStarted && !isPaused ? <Pause size={11} /> : <Play size={11} />}
-            {hasStarted && !isPaused ? "Pause" : "RUN"}
-          </button>
-        </div>
-      </header>
-
-      {/* Two-panel body: 2/3 histogram | 1/3 result */}
-      <main
-        className="flex-1 grid gap-3 p-3 min-h-0"
-        style={{ gridTemplateColumns: "2fr 1fr" }}
-      >
-        {/* Left panel: Split into top and bottom halves */}
-        <div className="flex flex-col gap-3 min-h-0">
-          <div className="flex-1 min-h-0">
-            <SpadHistogram
-              ref={spadRef}
-              onConcentrationUpdate={handleConcentrationUpdate}
-            />
-          </div>
-          <div className="flex-1 min-h-0">
-            <ConcentrationTimeChart concentrationData={measurementState.concentrationDataset} />
-          </div>
-        </div>
-
-        <div className="flex flex-col gap-3 min-h-0">
-          <div className="flex-1 min-h-0">
-            <FinalResultPanel
-              concentration={measurementState.concentrationDataset.at(-1)?.concentration}
-              isPositive={isPositive}
-              timeToPositive={timeToPositive}
-            />
-          </div>
-          <div className="flex-[2] min-h-0">
-            <ConcentrationPanel averageData={measurementState.thirtySecondAverages} />
-          </div>
-        </div>
-      </main>
-    </div>
-  );
+function formatDuration(totalSeconds: number) {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = Math.floor(totalSeconds % 60);
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 }
