@@ -21,6 +21,7 @@ it('labels record lower bounds and draws the 30 ug/mL threshold', async () => {
   const { rerender } = render(<ConcentrationTimeChart concentrationData={[]} />);
   expect(screen.getByText('Lower Bound vs Time')).toBeInTheDocument();
   expect(Plotly.newPlot.mock.calls[0][2].shapes[0]).toMatchObject({ y0: 30, y1: 30 });
+  expect(Plotly.update.mock.calls[0][2]['xaxis.autorange']).toBe(true);
 
   rerender(<ConcentrationTimeChart concentrationData={[{ time: 20, concentration: 31.25 }]} />);
   await waitFor(() => expect(Plotly.update).toHaveBeenCalled());

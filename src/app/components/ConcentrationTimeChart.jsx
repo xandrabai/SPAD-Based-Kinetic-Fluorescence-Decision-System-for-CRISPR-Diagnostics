@@ -94,7 +94,11 @@ const ConcentrationTimeChart = ({ concentrationData = [] }) => {
       Promise.resolve(Plotly.update(
         'concentration-time-plot',
         { x: [[]], y: [[]] },
-        { 'yaxis.range': [0, 40], shapes: [thresholdShape] },
+        {
+          'xaxis.autorange': true,
+          'yaxis.range': [0, 40],
+          shapes: [thresholdShape],
+        },
         [0],
       )).catch(() => {});
       return;
@@ -110,7 +114,11 @@ const ConcentrationTimeChart = ({ concentrationData = [] }) => {
         x: [visibleData.map(({ time }) => time)],
         y: [visibleData.map(({ concentration }) => concentration)],
       },
-      { 'yaxis.range': [0, yMax], shapes: [thresholdShape] },
+      {
+        'xaxis.autorange': true,
+        'yaxis.range': [0, yMax],
+        shapes: [thresholdShape],
+      },
       [0],
     )).catch(() => {});
   }, [concentrationData]);
