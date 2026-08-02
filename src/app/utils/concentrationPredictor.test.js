@@ -15,6 +15,9 @@ describe('calibration contract', () => {
 
   it('inverts the JSON linear calibration', () => {
     const { slope, intercept } = getCalibrationInfo().model;
+    expect(slope).toBeCloseTo(1.8989778571707154, 12);
+    expect(intercept).toBeCloseTo(149.32508214196258, 12);
+    expect(getCalibrationInfo().validRange).toEqual({ min: 10, max: 290 });
     expect(predictConcentration(slope * 30 + intercept)).toBeCloseTo(30, 10);
   });
 
@@ -32,7 +35,8 @@ describe('calibration contract', () => {
   it('labels predictions outside the calibration range', () => {
     const { slope, intercept } = getCalibrationInfo().model;
     expect(processFrameFromSignal(slope * 5 + intercept).status).toBe('below_range');
-    expect(processFrameFromSignal(slope * 95 + intercept).status).toBe('above_range');
+    expect(processFrameFromSignal(slope * 295 + intercept).status).toBe('above_range');
+    expect(processFrameFromSignal(slope * 290 + intercept).status).toBe('valid');
   });
 });
 

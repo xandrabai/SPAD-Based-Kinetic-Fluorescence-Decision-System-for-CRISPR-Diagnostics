@@ -34,7 +34,7 @@ it('rejects malformed and out-of-range payloads', () => {
   expect(transition.state.outOfRangeFrameCount).toBe(0);
 
   state = transition.state;
-  transition = processRealtimePayload(state, payloadForConcentration(95), 0);
+  transition = processRealtimePayload(state, payloadForConcentration(295), 0);
   expect(transition.status).toBe('out_of_range');
   expect(transition.state.malformedFrameCount).toBe(1);
   expect(transition.state.outOfRangeFrameCount).toBe(1);

@@ -124,7 +124,7 @@ describe('SpadHistogram run integration', () => {
     const port = fakePortForFrames([
       malformed,
       controlPacket,
-      framed(payloadForConcentration(95)),
+      framed(payloadForConcentration(295)),
     ], clock);
     Object.defineProperty(navigator, 'serial', {
       configurable: true,
