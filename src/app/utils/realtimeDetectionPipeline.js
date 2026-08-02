@@ -7,7 +7,8 @@ export function createRealtimePipeline() {
   return {
     aggregator: createBlockAggregator(),
     detection: createDetectionState(),
-    invalidFrameCount: 0,
+    malformedFrameCount: 0,
+    outOfRangeFrameCount: 0,
   };
 }
 
@@ -15,7 +16,7 @@ export function processRealtimePayload(state, payload, activeElapsedMs) {
   const bins = decodeHistogramPayload(payload);
   if (bins === null) {
     return {
-      state: { ...state, invalidFrameCount: state.invalidFrameCount + 1 },
+      state: { ...state, malformedFrameCount: state.malformedFrameCount + 1 },
       status: 'invalid_frame',
       bins: null,
       prediction: null,
@@ -26,7 +27,11 @@ export function processRealtimePayload(state, payload, activeElapsedMs) {
   const prediction = processFrame(bins);
   if (prediction.status !== 'valid') {
     return {
-      state: { ...state, invalidFrameCount: state.invalidFrameCount + 1 },
+      state: {
+        ...state,
+        malformedFrameCount: state.malformedFrameCount + (prediction.status === 'invalid' ? 1 : 0),
+        outOfRangeFrameCount: state.outOfRangeFrameCount + (prediction.status === 'invalid' ? 0 : 1),
+      },
       status: prediction.status === 'invalid' ? 'invalid_frame' : 'out_of_range',
       bins,
       prediction,

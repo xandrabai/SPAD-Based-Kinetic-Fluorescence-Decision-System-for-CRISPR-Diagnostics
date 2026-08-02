@@ -27,7 +27,15 @@ it('crosses after ten variable high blocks and keeps updating afterward', () => 
 });
 
 it('rejects malformed and out-of-range payloads', () => {
-  const state = createRealtimePipeline();
-  expect(processRealtimePayload(state, new Uint8Array(2), 0).status).toBe('invalid_frame');
-  expect(processRealtimePayload(state, payloadForConcentration(95), 0).status).toBe('out_of_range');
+  let state = createRealtimePipeline();
+  let transition = processRealtimePayload(state, new Uint8Array(2), 0);
+  expect(transition.status).toBe('invalid_frame');
+  expect(transition.state.malformedFrameCount).toBe(1);
+  expect(transition.state.outOfRangeFrameCount).toBe(0);
+
+  state = transition.state;
+  transition = processRealtimePayload(state, payloadForConcentration(95), 0);
+  expect(transition.status).toBe('out_of_range');
+  expect(transition.state.malformedFrameCount).toBe(1);
+  expect(transition.state.outOfRangeFrameCount).toBe(1);
 });

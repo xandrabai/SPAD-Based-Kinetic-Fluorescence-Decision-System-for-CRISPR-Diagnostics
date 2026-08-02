@@ -18,6 +18,7 @@ import {
   resumeActiveRunClock,
 } from '../utils/activeRunClock';
 import { replayEnabled, startPositiveReplay } from '../utils/replaySource';
+import { consumeSerialBytes } from '../utils/serialPacketDecoder';
 
 const C = {
   bg: '#0b0f14',
@@ -39,7 +40,8 @@ const SpadHistogram = forwardRef(({
   const [isConnected, setIsConnected] = useState(false);
   const [fps, setFps] = useState(0);
   const [view, setView] = useState('raw');
-  const [invalidFrameCount, setInvalidFrameCount] = useState(0);
+  const [malformedPacketCount, setMalformedPacketCount] = useState(0);
+  const [outOfRangeFrameCount, setOutOfRangeFrameCount] = useState(0);
   const [latestSignal, setLatestSignal] = useState(null);
   const [chartError, setChartError] = useState(null);
 
@@ -51,6 +53,7 @@ const SpadHistogram = forwardRef(({
   const pipelineRef = useRef(createRealtimePipeline());
   const clockRef = useRef(null);
   const replayStopRef = useRef(null);
+  const transportMalformedCountRef = useRef(0);
 
   useEffect(() => {
     const xData = Array.from({ length: NUM_BINS }, (_, index) => index);
@@ -143,7 +146,10 @@ const SpadHistogram = forwardRef(({
       activeElapsedMs,
     );
     pipelineRef.current = transition.state;
-    setInvalidFrameCount(transition.state.invalidFrameCount);
+    setMalformedPacketCount(
+      transportMalformedCountRef.current + transition.state.malformedFrameCount,
+    );
+    setOutOfRangeFrameCount(transition.state.outOfRangeFrameCount);
 
     if (transition.bins === null) return;
     const bins = transition.bins;
@@ -175,24 +181,16 @@ const SpadHistogram = forwardRef(({
           if (done) break;
           if (!value) continue;
 
-          const nextBuffer = new Uint8Array(byteBuffer.length + value.length);
-          nextBuffer.set(byteBuffer);
-          nextBuffer.set(value, byteBuffer.length);
-          byteBuffer = nextBuffer;
-
-          while (byteBuffer.length >= 6) {
-            if (byteBuffer[0] !== 0x7e || byteBuffer[1] !== 0xe7) {
-              byteBuffer = byteBuffer.slice(1);
-              continue;
-            }
-
-            const payloadLength = byteBuffer[4] | (byteBuffer[5] << 8);
-            const totalFrameLength = 6 + payloadLength;
-            if (byteBuffer.length < totalFrameLength) break;
-
-            const payload = byteBuffer.slice(6, totalFrameLength);
-            if (!isPausedRef.current) updatePlotWithFrame(payload);
-            byteBuffer = byteBuffer.slice(totalFrameLength);
+          const decoded = consumeSerialBytes(byteBuffer, value);
+          byteBuffer = decoded.buffer;
+          if (decoded.malformedPacketCount > 0) {
+            transportMalformedCountRef.current += decoded.malformedPacketCount;
+            setMalformedPacketCount(
+              transportMalformedCountRef.current + pipelineRef.current.malformedFrameCount,
+            );
+          }
+          if (!isPausedRef.current) {
+            decoded.histogramPayloads.forEach(updatePlotWithFrame);
           }
         }
       } catch (error) {
@@ -219,7 +217,9 @@ const SpadHistogram = forwardRef(({
     keepReadingRef.current = true;
     isPausedRef.current = false;
     frameCountRef.current = 0;
-    setInvalidFrameCount(0);
+    transportMalformedCountRef.current = 0;
+    setMalformedPacketCount(0);
+    setOutOfRangeFrameCount(0);
     setLatestSignal(null);
     setChartError(null);
     onActiveTimeChange?.(0);
@@ -271,7 +271,9 @@ const SpadHistogram = forwardRef(({
     pipelineRef.current = createRealtimePipeline();
     clockRef.current = null;
     frameCountRef.current = 0;
-    setInvalidFrameCount(0);
+    transportMalformedCountRef.current = 0;
+    setMalformedPacketCount(0);
+    setOutOfRangeFrameCount(0);
     setLatestSignal(null);
     setChartError(null);
     onActiveTimeChange?.(0);
@@ -351,7 +353,8 @@ const SpadHistogram = forwardRef(({
         <span className="font-semibold" style={{ color: C.text }}>
           {latestSignal === null ? '--' : latestSignal.toFixed(2)}
         </span>
-        <span className="ml-auto">Invalid frames: {invalidFrameCount}</span>
+        <span className="ml-auto">Malformed packets: {malformedPacketCount}</span>
+        <span>Out-of-range predictions: {outOfRangeFrameCount}</span>
         {chartError ? <span role="status">{chartError}</span> : null}
       </footer>
     </section>

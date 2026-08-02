@@ -1,8 +1,10 @@
 export const HISTOGRAM_BIN_COUNT = 3_840;
 export const HISTOGRAM_PAYLOAD_BYTES = (HISTOGRAM_BIN_COUNT / 2) * 4;
+export const SHORT_HISTOGRAM_BIN_COUNT = 256;
+export const HISTOGRAM_BYTES = ((HISTOGRAM_BIN_COUNT + SHORT_HISTOGRAM_BIN_COUNT) / 2) * 4;
 
 export function decodeHistogramPayload(payload) {
-  if (!(payload instanceof Uint8Array) || payload.byteLength !== HISTOGRAM_PAYLOAD_BYTES) {
+  if (!(payload instanceof Uint8Array) || payload.byteLength !== HISTOGRAM_BYTES) {
     return null;
   }
 

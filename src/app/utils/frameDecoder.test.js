@@ -10,8 +10,9 @@ describe('decodeHistogramPayload', () => {
   });
 
   it('decodes two unsigned 12-bit bins per little-endian word', () => {
-    const payload = new Uint8Array(HISTOGRAM_PAYLOAD_BYTES);
+    const payload = new Uint8Array(8_192);
     new DataView(payload.buffer).setUint32(0, 0x80abc123, true);
+    new DataView(payload.buffer).setUint32(HISTOGRAM_PAYLOAD_BYTES, 0x001002, true);
     const bins = decodeHistogramPayload(payload);
     expect(bins[0]).toBe(0x123);
     expect(bins[1]).toBe(0xabc);
