@@ -17,6 +17,7 @@ import {
   pauseActiveRunClock,
   resumeActiveRunClock,
 } from '../utils/activeRunClock';
+import { replayEnabled, startPositiveReplay } from '../utils/replaySource';
 
 const C = {
   bg: '#0b0f14',
@@ -49,6 +50,7 @@ const SpadHistogram = forwardRef(({
   const frameCountRef = useRef(0);
   const pipelineRef = useRef(createRealtimePipeline());
   const clockRef = useRef(null);
+  const replayStopRef = useRef(null);
 
   useEffect(() => {
     const xData = Array.from({ length: NUM_BINS }, (_, index) => index);
@@ -99,6 +101,8 @@ const SpadHistogram = forwardRef(({
 
     return () => {
       window.clearInterval(fpsInterval);
+      replayStopRef.current?.();
+      replayStopRef.current = null;
       keepReadingRef.current = false;
       readerRef.current?.cancel().catch(() => {});
       Plotly.purge('react-spad-plot');
@@ -224,6 +228,15 @@ const SpadHistogram = forwardRef(({
 
   const startConnection = async () => {
     onTransportChange?.('connecting');
+    if (replayEnabled()) {
+      replayStopRef.current?.();
+      setIsConnected(true);
+      beginRun();
+      replayStopRef.current = startPositiveReplay((payload) => {
+        if (!isPausedRef.current) updatePlotWithFrame(payload);
+      });
+      return;
+    }
     if (portRef.current?.readable) {
       beginRun();
       return;
@@ -252,6 +265,8 @@ const SpadHistogram = forwardRef(({
   };
 
   const resetData = async () => {
+    replayStopRef.current?.();
+    replayStopRef.current = null;
     isPausedRef.current = true;
     pipelineRef.current = createRealtimePipeline();
     clockRef.current = null;

@@ -12,6 +12,7 @@ import {
 import ConcentrationTimeChart from './components/ConcentrationTimeChart';
 import DetectionResultPanel from './components/DetectionResultPanel';
 import SpadHistogram from './components/SpadHistogram';
+import { replayEnabled } from './utils/replaySource';
 
 const C = {
   bg: '#0b0f14',
@@ -62,8 +63,10 @@ export default function App() {
   const [lowerBoundData, setLowerBoundData] = useState<ConcentrationPoint[]>([]);
   const [blockMeanData, setBlockMeanData] = useState<ConcentrationPoint[]>([]);
   const spadRef = useRef<SpadHandle | null>(null);
-  const serialSupported = typeof navigator !== 'undefined'
-    && (navigator as Navigator & { serial?: unknown }).serial !== undefined;
+  const serialSupported = (
+    typeof navigator !== 'undefined'
+    && (navigator as Navigator & { serial?: unknown }).serial !== undefined
+  ) || (typeof window !== 'undefined' && replayEnabled());
 
   const thirtySecondAverages = useMemo(() => {
     const completedWindowEnd = Math.floor(activeElapsedMs / 30_000) * 30;
