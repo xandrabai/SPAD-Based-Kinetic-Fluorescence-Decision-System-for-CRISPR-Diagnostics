@@ -1,5 +1,3 @@
-export const HISTOGRAM_OPCODE = 0x4005;
-
 function joinBytes(left, right) {
   const joined = new Uint8Array(left.length + right.length);
   joined.set(left);
@@ -17,24 +15,13 @@ export function consumeSerialBytes(previousBuffer, chunk) {
       buffer = buffer.slice(1);
       continue;
     }
-    if (buffer.length < 7) break;
+    if (buffer.length < 6) break;
 
-    const opcode = buffer[2] | (buffer[3] << 8);
     const payloadLength = buffer[4] | (buffer[5] << 8);
-    const packetLength = 7 + payloadLength;
+    const packetLength = 6 + payloadLength;
     if (buffer.length < packetLength) break;
 
-    const packet = buffer.slice(0, packetLength);
-    let expectedChecksum = 0;
-    for (let index = 0; index < packet.length - 1; index += 1) {
-      expectedChecksum = (expectedChecksum + packet[index]) & 0xff;
-    }
-
-    if (packet[packet.length - 1] !== expectedChecksum) {
-      malformedPacketCount += 1;
-    } else if (opcode === HISTOGRAM_OPCODE) {
-      histogramPayloads.push(packet.slice(6, packet.length - 1));
-    }
+    histogramPayloads.push(buffer.slice(6, packetLength));
     buffer = buffer.slice(packetLength);
   }
 

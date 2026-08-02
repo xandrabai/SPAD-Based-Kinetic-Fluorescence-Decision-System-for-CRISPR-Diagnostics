@@ -18,4 +18,9 @@ describe('decodeHistogramPayload', () => {
     expect(bins[1]).toBe(0xabc);
     expect(bins).toHaveLength(3840);
   });
+
+  it('accepts the 7680 long-bin bytes used by the working Vercel parser', () => {
+    const payload = new Uint8Array(HISTOGRAM_PAYLOAD_BYTES);
+    expect(decodeHistogramPayload(payload)).toHaveLength(3840);
+  });
 });
