@@ -1,18 +1,4 @@
-/**
- * ============================================================
- *  Configuration — placeholder values, update here only
- * ============================================================
- * These values gate when a real-time concentration prediction
- * is considered statistically reliable enough to display.
- * Referenced by predictionConfidence.js — do not hard-code
- * these numbers anywhere else in the application.
- */
-
-// nM. Temporary placeholder — will be replaced with the actual qPCR threshold.
-export const QPCR_THRESHOLD_CONCENTRATION = 10.0;
-
-export const P_VALUE_THRESHOLD = 0.05;
-export const CONFIDENCE_LEVEL = 0.95;
-
-export const MIN_SAMPLES_FOR_PREDICTION = 10;
-export const MIN_SAMPLES_FOR_DECISION = 20;
+export const DETECTION_THRESHOLD_UG_ML = 30;
+export const BLOCK_DURATION_MS = 2_000;
+export const MIN_BLOCKS_FOR_DECISION = 10;
+export const RUN_ALPHA = 0.05;

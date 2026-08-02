@@ -1,5 +1,6 @@
 {
   "calibration_mode": "concentration_means",
+  "concentration_unit": "ug/mL",
   "models": {
     "lasso": {
       "alpha": 1.5264179671752334,
