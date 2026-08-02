@@ -2,7 +2,7 @@ import React from 'react';
 import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, it, vi } from 'vitest';
-import App from './App';
+import App, { getBlockMeanYAxis } from './App';
 
 const histogram = vi.hoisted(() => ({
   props: null as any,
@@ -57,6 +57,21 @@ beforeEach(() => {
   Object.defineProperty(navigator, 'serial', {
     configurable: true,
     value: {},
+  });
+});
+
+it('expands the 30 s average axis only when an average exceeds 100', () => {
+  expect(getBlockMeanYAxis([])).toEqual({
+    domain: [0, 100],
+    ticks: [0, 25, 50, 75, 100],
+  });
+  expect(getBlockMeanYAxis([{ time: 30, concentration: 100 }])).toEqual({
+    domain: [0, 100],
+    ticks: [0, 25, 50, 75, 100],
+  });
+  expect(getBlockMeanYAxis([{ time: 30, concentration: 100.01 }])).toEqual({
+    domain: [0, 300],
+    ticks: [0, 50, 100, 150, 200, 250, 300],
   });
 });
 

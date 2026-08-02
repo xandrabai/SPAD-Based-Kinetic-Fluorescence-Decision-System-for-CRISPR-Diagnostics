@@ -33,6 +33,13 @@ type ConcentrationPoint = {
 
 type ThirtySecondAveragePoint = ConcentrationPoint;
 
+export function getBlockMeanYAxis(averageData: ThirtySecondAveragePoint[]) {
+  const usesExtendedRange = averageData.some(({ concentration }) => concentration > 100);
+  return usesExtendedRange
+    ? { domain: [0, 300] as [number, number], ticks: [0, 50, 100, 150, 200, 250, 300] }
+    : { domain: [0, 100] as [number, number], ticks: [0, 25, 50, 75, 100] };
+}
+
 type ConfidenceInterval = {
   lowerBound: number;
   midpoint: number;
@@ -261,6 +268,7 @@ export default function App() {
 
 function BlockMeanAveragePanel({ averageData }: { averageData: ThirtySecondAveragePoint[] }) {
   const xAxisEnd = Math.max(120, averageData.at(-1)?.time ?? 0);
+  const yAxis = getBlockMeanYAxis(averageData);
   const xAxisTicks = Array.from(
     { length: Math.floor(xAxisEnd / 30) + 1 },
     (_, index) => index * 30,
@@ -298,8 +306,8 @@ function BlockMeanAveragePanel({ averageData }: { averageData: ThirtySecondAvera
             />
             <YAxis
               type="number"
-              domain={[0, 100]}
-              ticks={[0, 25, 50, 75, 100]}
+              domain={yAxis.domain}
+              ticks={yAxis.ticks}
               tick={{ fill: C.muted, fontSize: 9, fontFamily: 'JetBrains Mono, monospace' }}
               axisLine={false}
               tickLine={false}
