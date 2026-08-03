@@ -26,21 +26,40 @@ This starts a local dev server (Vite will print the URL, usually `http://localho
 Open it in Chrome or Edge. Click **RUN** to open the serial port picker and connect to the
 board.
 
+## Detection rule
+
+The current project-defined positive threshold is **30 ug/mL**. It is an
+operational comparator for this prototype, not a universal qPCR limit of detection.
+Live frame predictions are averaged into non-overlapping 2 s active-time blocks.
+Beginning at 10 valid blocks, the dashboard uses a one-sided alpha-spending t bound
+and only publishes strict record-high lower bounds. POSITIVE latches at the first
+valid lower bound above 30 ug/mL; time to positive freezes, while detection and
+higher-bound updates continue.
+
+The lower bound includes live measurement variability conditional on the saved
+linear calibration. It does not include uncertainty in the fitted calibration
+coefficients.
+
+## Replay verification
+
+Run `npm run dev`, then open `http://localhost:5173/?replay=positive`. RUN uses a
+deterministic positive payload sequence instead of opening Web Serial. The replay
+must latch POSITIVE and continue increasing the lower-bound number afterward.
+
 ## Making changes
 
 - `src/app/App.tsx` — layout, header, and the two result/average panels
-- `src/app/components/SpadHistogram.jsx` — serial connection, raw histogram plot, and the
-  real-time prediction/confidence logic
-- `src/app/components/ConcentrationTimeChart.jsx` — concentration-vs-time plot
+- `src/app/components/SpadHistogram.jsx` — serial/replay transport and raw histogram plot
+- `src/app/components/ConcentrationTimeChart.jsx` — published lower-bound plot
 - `src/app/utils/concentrationPredictor.js` — the regression model (don't touch unless the
   calibration itself is changing)
-- `src/app/utils/config.js` — tunable thresholds (qPCR threshold, p-value, confidence level,
-  min sample counts) — change values here rather than hard-coding them elsewhere
-- `src/app/utils/predictionConfidence.js` — the statistical significance test
+- `src/app/utils/config.js` — threshold, block duration, minimum blocks, and run alpha
+- `src/app/utils/predictionConfidence.js` — alpha-spent sequential confidence calculation
 
-Before pushing, sanity-check your change builds:
+Before pushing, run the tests and check that the production build succeeds:
 
 ```bash
+npm test
 npm run build
 ```
 

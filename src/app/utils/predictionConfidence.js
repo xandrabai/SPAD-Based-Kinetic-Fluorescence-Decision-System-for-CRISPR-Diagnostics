@@ -1,19 +1,7 @@
-/**
- * Prediction Confidence Gate
- *
- * Wraps the existing regression model (concentrationPredictor.js, untouched)
- * with a one-sided one-sample t-test: is the mean of the concentration
- * predictions collected so far statistically significantly greater than
- * QPCR_THRESHOLD_CONCENTRATION? If so, the lower confidence bound of that
- * mean is used as the gate for updating the UI.
- *
- * All thresholds live in config.js — see that file to retune behavior.
- */
 import {
-  QPCR_THRESHOLD_CONCENTRATION,
-  P_VALUE_THRESHOLD,
-  CONFIDENCE_LEVEL,
-  MIN_SAMPLES_FOR_DECISION,
+  DETECTION_THRESHOLD_UG_ML,
+  MIN_BLOCKS_FOR_DECISION,
+  RUN_ALPHA,
 } from './config';
 
 function mean(values) {
@@ -116,48 +104,46 @@ function studentTQuantile(p, df) {
   return (lo + hi) / 2;
 }
 
-/**
- * Evaluate whether a set of regression-predicted concentrations is
- * statistically significantly above QPCR_THRESHOLD_CONCENTRATION.
- *
- * @param {number[]} predictionSamples - concentrations from processFrame(), one per sample
- * @returns {{
- *   isSignificant: boolean,
- *   mean: number,
- *   lowerBound: number,
- *   pValue: number,
- *   n: number,
- * } | { isSignificant: false }}
- */
-export function evaluateConfidence(predictionSamples) {
-  const n = predictionSamples.length;
-  if (n < MIN_SAMPLES_FOR_DECISION) {
-    return { isSignificant: false, n };
+export function alphaForLook(lookNumber) {
+  if (!Number.isInteger(lookNumber) || lookNumber < 1) return 0;
+  return RUN_ALPHA / (lookNumber * (lookNumber + 1));
+}
+
+export function evaluateSequentialConfidence(blockMeans, lookNumber) {
+  const n = blockMeans.length;
+  if (n < MIN_BLOCKS_FOR_DECISION) {
+    return { status: 'insufficient', n, lookNumber };
+  }
+  if (!blockMeans.every(Number.isFinite)) {
+    return { status: 'invalid', n, lookNumber };
   }
 
-  const avg = mean(predictionSamples);
-  const sd = sampleStdDev(predictionSamples, avg);
+  const avg = mean(blockMeans);
+  const sd = sampleStdDev(blockMeans, avg);
+  if (!Number.isFinite(sd) || sd === 0) {
+    return { status: 'zero_variance', n, lookNumber, mean: avg };
+  }
+
   const df = n - 1;
-
-  if (sd === 0) {
-    // No variance across samples: fall back to a direct comparison.
-    const isSignificant = avg > QPCR_THRESHOLD_CONCENTRATION;
-    return { isSignificant, mean: avg, lowerBound: avg, pValue: isSignificant ? 0 : 1, n };
-  }
-
-  const se = sd / Math.sqrt(n);
-  const t = (avg - QPCR_THRESHOLD_CONCENTRATION) / se;
-  const pValue = 1 - studentTCDF(t, df);
-  const isStatisticallySignificant = pValue < P_VALUE_THRESHOLD;
-
-  const tCrit = studentTQuantile(CONFIDENCE_LEVEL, df);
-  const lowerBound = avg - tCrit * se;
+  const standardError = sd / Math.sqrt(n);
+  const tStatistic = (avg - DETECTION_THRESHOLD_UG_ML) / standardError;
+  const pValue = 1 - studentTCDF(tStatistic, df);
+  const alphaAtLook = alphaForLook(lookNumber);
+  const criticalT = studentTQuantile(1 - alphaAtLook, df);
+  const lowerBound = avg - criticalT * standardError;
+  const upperBound = avg + criticalT * standardError;
 
   return {
-    isSignificant: isStatisticallySignificant && lowerBound > QPCR_THRESHOLD_CONCENTRATION,
-    mean: avg,
-    lowerBound,
-    pValue,
+    status: 'valid',
     n,
+    lookNumber,
+    mean: avg,
+    standardDeviation: sd,
+    standardError,
+    pValue,
+    alphaAtLook,
+    lowerBound,
+    upperBound,
+    isPositive: pValue < alphaAtLook && lowerBound > DETECTION_THRESHOLD_UG_ML,
   };
 }

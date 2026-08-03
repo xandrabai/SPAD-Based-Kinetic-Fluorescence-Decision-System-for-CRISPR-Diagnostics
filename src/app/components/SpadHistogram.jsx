@@ -1,9 +1,24 @@
-import React, { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
+import React, {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from 'react';
 import Plotly from 'plotly.js-dist-min';
 import { Activity } from 'lucide-react';
-import { processFrame } from '../utils/concentrationPredictor';
-import { evaluateConfidence } from '../utils/predictionConfidence';
-import { MIN_SAMPLES_FOR_PREDICTION } from '../utils/config';
+import {
+  createRealtimePipeline,
+  processRealtimePayload,
+} from '../utils/realtimeDetectionPipeline';
+import {
+  createActiveRunClock,
+  elapsedActiveMs,
+  pauseActiveRunClock,
+  resumeActiveRunClock,
+} from '../utils/activeRunClock';
+import { replayEnabled, startPositiveReplay } from '../utils/replaySource';
+import { consumeSerialBytes } from '../utils/serialPacketDecoder';
 
 const C = {
   bg: '#0b0f14',
@@ -11,58 +26,56 @@ const C = {
   border: '#1e2a38',
   accent: '#00d4aa',
   accentDim: '#00d4aa22',
-  accentBright: '#00ffcc',
-  blue: '#4f9eff',
-  blueDim: '#4f9eff18',
-  orange: '#ff8c42',
-  yellow: '#f5c518',
   text: '#e2eaf4',
-  muted: '#6b7a8d',
-  dimText: '#3d4f63',
+  muted: '#8fa1b5',
 };
 
-const SpadHistogram = forwardRef(({ onConcentrationUpdate }, ref) => {
+const NUM_BINS = 3_840;
+
+const SpadHistogram = forwardRef(({
+  onDetectionUpdate,
+  onConcentrationPoint,
+  onTransportChange,
+  onActiveTimeChange,
+}, ref) => {
   const [isConnected, setIsConnected] = useState(false);
-  const [baudRate] = useState(460800);
   const [fps, setFps] = useState(0);
   const [view, setView] = useState('raw');
-  
-  // Track start time for elapsed time calculation
-  const startTimeRef = useRef(Date.now());
+  const [malformedPacketCount, setMalformedPacketCount] = useState(0);
+  const [outOfRangeFrameCount, setOutOfRangeFrameCount] = useState(0);
+  const [latestSignal, setLatestSignal] = useState(null);
+  const [chartError, setChartError] = useState(null);
 
   const portRef = useRef(null);
   const readerRef = useRef(null);
   const keepReadingRef = useRef(true);
   const isPausedRef = useRef(false);
   const frameCountRef = useRef(0);
-  const sampleCountRef = useRef(0);
-  const predictionSamplesRef = useRef([]);
-  const lastLowerBoundRef = useRef(null);
-
-  const numBins = 3840;
-  const xData = Array.from({ length: numBins }, (_, i) => i);
-  let yData = new Array(numBins).fill(0);
+  const pipelineRef = useRef(createRealtimePipeline());
+  const clockRef = useRef(null);
+  const replayStopRef = useRef(null);
+  const transportMalformedCountRef = useRef(0);
 
   useEffect(() => {
+    const xData = Array.from({ length: NUM_BINS }, (_, index) => index);
     const trace = {
       x: xData,
-      y: yData,
+      y: new Array(NUM_BINS).fill(0),
       mode: 'lines',
       type: 'scattergl',
       line: { color: C.accent, width: 2, shape: 'spline' },
       fill: 'tozeroy',
-      fillcolor: C.accentDim
+      fillcolor: C.accentDim,
     };
-
     const layout = {
       title: null,
       xaxis: {
         title: { text: 'Channel (100 ps/bin)', font: { size: 10, color: C.muted } },
-        range: [0, numBins - 1],
+        range: [0, NUM_BINS - 1],
         gridcolor: C.border,
         color: C.muted,
         showline: false,
-        zeroline: false
+        zeroline: false,
       },
       yaxis: {
         title: { text: 'Counts', font: { size: 10, color: C.muted } },
@@ -70,201 +83,211 @@ const SpadHistogram = forwardRef(({ onConcentrationUpdate }, ref) => {
         color: C.muted,
         range: [0, 100],
         showline: false,
-        zeroline: false
+        zeroline: false,
       },
       plot_bgcolor: C.panel,
       paper_bgcolor: C.panel,
       font: { family: 'JetBrains Mono, monospace', color: C.muted, size: 9 },
-      margin: { t: 10, r: 20, b: 40, l: 50 }
+      margin: { t: 10, r: 20, b: 40, l: 50 },
     };
 
-    Plotly.newPlot('react-spad-plot', [trace], layout, { responsive: true, displayModeBar: false });
+    Promise.resolve(
+      Plotly.newPlot('react-spad-plot', [trace], layout, {
+        responsive: true,
+        displayModeBar: false,
+      }),
+    ).catch(() => setChartError('Signal chart unavailable'));
 
-    const fpsInterval = setInterval(() => {
+    const fpsInterval = window.setInterval(() => {
       setFps(frameCountRef.current);
       frameCountRef.current = 0;
-    }, 1000);
+    }, 1_000);
 
     return () => {
-      clearInterval(fpsInterval);
-      if (portRef.current) {
-        keepReadingRef.current = false;
-        readerRef.current?.cancel().catch(() => {});
-      }
+      window.clearInterval(fpsInterval);
+      replayStopRef.current?.();
+      replayStopRef.current = null;
+      keepReadingRef.current = false;
+      readerRef.current?.cancel().catch(() => {});
+      Plotly.purge('react-spad-plot');
     };
   }, []);
 
-  // Update y-axis title when view changes
   useEffect(() => {
-    const yAxisTitle = view === 'norm' ? 'Normalized' : 'Counts';
-    Plotly.relayout('react-spad-plot', {
-      'yaxis.title': { text: yAxisTitle, font: { size: 10, color: C.muted } }
-    }).catch(() => {
-      // Chart might not be initialized yet, ignore
-    });
+    Promise.resolve(Plotly.relayout('react-spad-plot', {
+      'yaxis.title': {
+        text: view === 'norm' ? 'Normalized' : 'Counts',
+        font: { size: 10, color: C.muted },
+      },
+    })).catch(() => setChartError('Signal chart unavailable'));
   }, [view]);
 
-  const processAlgorithm = (binsArray) => {
-    if (view === 'norm') {
-      const maxVal = Math.max(...binsArray);
-      return maxVal > 0 ? Array.from(binsArray, v => v / maxVal) : binsArray;
-    }
-    return binsArray;
-  };
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      onActiveTimeChange?.(
+        clockRef.current ? elapsedActiveMs(clockRef.current, performance.now()) : 0,
+      );
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, [onActiveTimeChange]);
 
-  // ==================== UNTOUCHED CORE LOGIC ====================
+  function processAlgorithm(bins) {
+    if (view !== 'norm') return bins;
+    const maxValue = Math.max(...bins);
+    return maxValue > 0 ? Array.from(bins, (value) => value / maxValue) : bins;
+  }
+
   function updatePlotWithFrame(payloadBytes) {
-    const bins = new Float64Array(numBins);
-    let maxVal = 0;
+    const activeElapsedMs = clockRef.current
+      ? elapsedActiveMs(clockRef.current, performance.now())
+      : 0;
+    const transition = processRealtimePayload(
+      pipelineRef.current,
+      payloadBytes,
+      activeElapsedMs,
+    );
+    pipelineRef.current = transition.state;
+    setMalformedPacketCount(
+      transportMalformedCountRef.current + transition.state.malformedFrameCount,
+    );
+    setOutOfRangeFrameCount(transition.state.outOfRangeFrameCount);
 
-    for (let i = 0; i < numBins / 2; i++) {
-      const byteIdx = i * 4;
-      if (byteIdx + 3 < payloadBytes.length) {
-        // CRITICAL: Force unsigned 32-bit integer to prevent sign-extension corruption
-        // when byte[3] has high bit set (values >= 128)
-        const word = (payloadBytes[byteIdx] | 
-                     (payloadBytes[byteIdx + 1] << 8) | 
-                     (payloadBytes[byteIdx + 2] << 16) | 
-                     (payloadBytes[byteIdx + 3] << 24)) >>> 0;
-        
-        const val1 = word & 0xFFF;        // Extract lowest 12 bits
-        const val2 = (word >> 12) & 0xFFF; // Extract middle 12 bits
-
-        bins[2 * i] = val1;
-        bins[2 * i + 1] = val2;
-
-        if (val1 > maxVal) maxVal = val1;
-        if (val2 > maxVal) maxVal = val2;
-      }
-    }
-
-    // Pass unpacked array through the custom processing algorithm
+    if (transition.bins === null) return;
+    const bins = transition.bins;
     const algorithmicResult = processAlgorithm(bins);
-
-    // Real-time regression prediction for every incoming sample (internal only —
-    // the UI only reflects the lower confidence bound, and only once it rises).
-    sampleCountRef.current += 1;
-    if (onConcentrationUpdate && sampleCountRef.current >= MIN_SAMPLES_FOR_PREDICTION) {
-      const prediction = processFrame(bins);
-      predictionSamplesRef.current.push(prediction.concentration);
-
-      const confidence = evaluateConfidence(predictionSamplesRef.current);
-      const hasLowerBound = confidence.lowerBound !== undefined;
-      const isNewHigh =
-        hasLowerBound &&
-        (lastLowerBoundRef.current === null || confidence.lowerBound > lastLowerBoundRef.current);
-
-      // Always report a positive call even if this particular lower bound
-      // isn't a new high (it can't be missed — the run stops right after).
-      if (hasLowerBound && (isNewHigh || confidence.isSignificant)) {
-        lastLowerBoundRef.current = confidence.lowerBound;
-        const elapsedSeconds = (Date.now() - startTimeRef.current) / 1000;
-        const payload = {
-          time: elapsedSeconds,
-          concentration: confidence.lowerBound,
-          signal: prediction.signal,
-          status: prediction.status
-        };
-
-        if (confidence.isSignificant) {
-          // Positive call: stop acquiring further samples and report time-to-positive.
-          isPausedRef.current = true;
-          payload.isPositive = true;
-          payload.timeToPositive = elapsedSeconds;
-        }
-
-        onConcentrationUpdate(payload);
-      }
+    if (Number.isFinite(transition.prediction?.signal)) {
+      setLatestSignal(transition.prediction.signal);
     }
+    if (transition.concentrationPoint) {
+      onConcentrationPoint?.(transition.concentrationPoint);
+    }
+    transition.completedEvents.forEach((event) => onDetectionUpdate?.(event));
 
-    const yLimit = maxVal > 0 ? Math.ceil(maxVal * 1.15) : 100;
-    Plotly.update('react-spad-plot', { y: [algorithmicResult] }, { 'yaxis.range': [0, yLimit] }, [0]);
-    frameCountRef.current++;
+    const maxValue = Math.max(...algorithmicResult);
+    const yLimit = maxValue > 0 ? Math.ceil(maxValue * 1.15) : 100;
+    Promise.resolve(Plotly.update(
+      'react-spad-plot',
+      { y: [algorithmicResult] },
+      { 'yaxis.range': [0, yLimit] },
+      [0],
+    )).catch(() => setChartError('Signal chart unavailable'));
+    frameCountRef.current += 1;
   }
 
   async function readLoop() {
     let byteBuffer = new Uint8Array(0);
 
-    while (portRef.current.readable && keepReadingRef.current) {
+    while (portRef.current?.readable && keepReadingRef.current) {
       readerRef.current = portRef.current.readable.getReader();
       try {
-        while (true) {
+        while (keepReadingRef.current) {
           const { value, done } = await readerRef.current.read();
           if (done) break;
-          if (value) {
-            let temp = new Uint8Array(byteBuffer.length + value.length);
-            temp.set(byteBuffer);
-            temp.set(value, byteBuffer.length);
-            byteBuffer = temp;
+          if (!value) continue;
 
-            while (byteBuffer.length >= 6) {
-              if (byteBuffer[0] === 0x7E && byteBuffer[1] === 0xE7) {
-                const payloadLen = byteBuffer[4] | (byteBuffer[5] << 8);
-                const totalFrameLen = 6 + payloadLen;
-
-                if (byteBuffer.length >= totalFrameLen) {
-                  const dataPayload = byteBuffer.slice(6, 6 + payloadLen);
-                  if (!isPausedRef.current) {
-                    updatePlotWithFrame(dataPayload);
-                  }
-                  byteBuffer = byteBuffer.slice(totalFrameLen);
-                } else {
-                  break;
-                }
-              } else {
-                byteBuffer = byteBuffer.slice(1);
-              }
-            }
+          const decoded = consumeSerialBytes(byteBuffer, value);
+          byteBuffer = decoded.buffer;
+          if (decoded.malformedPacketCount > 0) {
+            transportMalformedCountRef.current += decoded.malformedPacketCount;
+            setMalformedPacketCount(
+              transportMalformedCountRef.current + pipelineRef.current.malformedFrameCount,
+            );
+          }
+          if (!isPausedRef.current) {
+            decoded.histogramPayloads.forEach(updatePlotWithFrame);
           }
         }
       } catch (error) {
-        console.error("Serial read error:", error);
+        if (keepReadingRef.current) {
+          console.error('Serial read error:', error);
+          onTransportChange?.('error');
+        }
       } finally {
-        readerRef.current.releaseLock();
+        readerRef.current?.releaseLock();
+        readerRef.current = null;
       }
     }
 
     if (portRef.current) {
-      await portRef.current.close();
+      await portRef.current.close().catch(() => {});
       portRef.current = null;
     }
     setIsConnected(false);
   }
 
+  const beginRun = () => {
+    pipelineRef.current = createRealtimePipeline();
+    clockRef.current = createActiveRunClock(performance.now());
+    keepReadingRef.current = true;
+    isPausedRef.current = false;
+    frameCountRef.current = 0;
+    transportMalformedCountRef.current = 0;
+    setMalformedPacketCount(0);
+    setOutOfRangeFrameCount(0);
+    setLatestSignal(null);
+    setChartError(null);
+    onActiveTimeChange?.(0);
+    onTransportChange?.('live');
+  };
+
   const startConnection = async () => {
-    if (portRef.current) return;
-    try {
-      portRef.current = await navigator.serial.requestPort();
-      await portRef.current.open({ baudRate: parseInt(baudRate) });
+    onTransportChange?.('connecting');
+    if (replayEnabled()) {
+      replayStopRef.current?.();
       setIsConnected(true);
-      keepReadingRef.current = true;
-      isPausedRef.current = false;
-      // Sample placed / run started now — time-to-positive is measured from here.
-      startTimeRef.current = Date.now();
-      readLoop();
-    } catch (err) {
-      console.error(err);
-      alert("UART connection failed. Please check physical connection.");
+      beginRun();
+      replayStopRef.current = startPositiveReplay((payload) => {
+        if (!isPausedRef.current) updatePlotWithFrame(payload);
+      });
+      return;
+    }
+    if (portRef.current?.readable) {
+      beginRun();
+      return;
+    }
+
+    try {
+      const port = await navigator.serial.requestPort();
+      await port.open({ baudRate: 460_800 });
+      portRef.current = port;
+      setIsConnected(true);
+      beginRun();
+      void readLoop();
+    } catch (error) {
+      console.error(error);
+      onTransportChange?.('error');
     }
   };
 
   const togglePause = (paused) => {
     isPausedRef.current = paused;
+    if (!clockRef.current) return;
+    clockRef.current = paused
+      ? pauseActiveRunClock(clockRef.current, performance.now())
+      : resumeActiveRunClock(clockRef.current, performance.now());
+    onTransportChange?.(paused ? 'paused' : 'live');
   };
 
-  const resetData = () => {
-    startTimeRef.current = Date.now();
-    isPausedRef.current = false;
-    sampleCountRef.current = 0;
-    predictionSamplesRef.current = [];
-    lastLowerBoundRef.current = null;
+  const resetData = async () => {
+    replayStopRef.current?.();
+    replayStopRef.current = null;
+    isPausedRef.current = true;
+    pipelineRef.current = createRealtimePipeline();
+    clockRef.current = null;
     frameCountRef.current = 0;
-    Plotly.update(
+    transportMalformedCountRef.current = 0;
+    setMalformedPacketCount(0);
+    setOutOfRangeFrameCount(0);
+    setLatestSignal(null);
+    setChartError(null);
+    onActiveTimeChange?.(0);
+    onTransportChange?.('ready');
+    await Promise.resolve(Plotly.update(
       'react-spad-plot',
-      { y: [new Array(numBins).fill(0)] },
+      { y: [new Array(NUM_BINS).fill(0)] },
       { 'yaxis.range': [0, 100] },
       [0],
-    ).catch(() => {});
+    )).catch(() => setChartError('Signal chart unavailable'));
   };
 
   useImperativeHandle(ref, () => ({
@@ -272,79 +295,76 @@ const SpadHistogram = forwardRef(({ onConcentrationUpdate }, ref) => {
     togglePause,
     resetData,
     isConnected,
-    fps
+    fps,
   }));
 
   return (
-    <div
-      className="flex flex-col rounded-lg overflow-hidden h-full"
+    <section
+      className="flex h-full flex-col overflow-hidden rounded-lg"
       style={{ background: C.panel, border: `1px solid ${C.border}` }}
+      aria-labelledby="signal-histogram-title"
     >
-      {/* Panel Header */}
-      <div
-        className="flex items-center justify-between px-3 py-2 border-b shrink-0"
+      <header
+        className="flex shrink-0 items-center justify-between border-b px-3 py-2"
         style={{ borderColor: C.border }}
       >
         <div className="flex items-center gap-2">
-          <span style={{ color: C.accent }}>
-            <Activity size={13} />
-          </span>
-          <span className="text-xs font-semibold tracking-wide" style={{ color: C.text }}>
+          <Activity size={13} aria-hidden="true" style={{ color: C.accent }} />
+          <h2 id="signal-histogram-title" className="text-xs font-semibold tracking-wide" style={{ color: C.text }}>
             Signal Histogram
-          </span>
+          </h2>
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-[10px]" style={{ color: C.muted, fontFamily: "JetBrains Mono, monospace" }}>
-            100 ps/bin
-          </span>
+          <span className="text-[10px] font-mono" style={{ color: C.muted }}>100 ps/bin</span>
           <button
+            type="button"
+            aria-pressed={view === 'raw'}
             onClick={() => setView('raw')}
-            className="px-2 py-0.5 rounded text-xs font-medium transition-colors"
+            className="rounded px-2 py-0.5 text-xs font-medium transition-colors"
             style={{ background: view === 'raw' ? C.accent : C.border, color: view === 'raw' ? C.bg : C.muted }}
           >
             Raw
           </button>
           <button
+            type="button"
+            aria-pressed={view === 'norm'}
             onClick={() => setView('norm')}
-            className="px-2 py-0.5 rounded text-xs font-medium transition-colors"
+            className="rounded px-2 py-0.5 text-xs font-medium transition-colors"
             style={{ background: view === 'norm' ? C.accent : C.border, color: view === 'norm' ? C.bg : C.muted }}
           >
-            Cleaned
+            Normalized
           </button>
         </div>
-      </div>
+      </header>
 
-      {/* Metadata Bar */}
       <div
-        className="flex items-center gap-3 px-3 py-1.5 text-[10px] border-b shrink-0"
-        style={{ borderColor: C.border, color: C.muted, fontFamily: "JetBrains Mono, monospace" }}
+        className="flex shrink-0 items-center gap-3 border-b px-3 py-1.5 font-mono text-[10px]"
+        style={{ borderColor: C.border, color: C.muted }}
       >
         <span>LED: 465 nm</span>
-        <span style={{ marginLeft: 'auto' }}>FPS: {fps}</span>
+        <span className="ml-auto">FPS: {fps}</span>
       </div>
 
-      {/* Plot Container */}
-      <div className="flex-1 px-2 pt-3 pb-1 min-h-0">
-        <div id="react-spad-plot" style={{ width: '100%', height: '100%' }}></div>
+      <div className="min-h-0 flex-1 px-2 pb-1 pt-3">
+        <div id="react-spad-plot" style={{ width: '100%', height: '100%' }} />
       </div>
 
-      {/* Footer */}
-      <div
-        className="flex items-center justify-between px-3 py-2 border-t shrink-0"
-        style={{ borderColor: C.border }}
+      <footer
+        className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t px-3 py-2 font-mono text-[10px]"
+        style={{ borderColor: C.border, color: C.muted }}
       >
-        <span className="text-[10px]" style={{ color: C.muted }}>
-          Mean Background Connected Integrated Counts per frame:
+        <span>Background-corrected integrated signal:</span>
+        <span className="font-semibold" style={{ color: C.text }}>
+          {latestSignal === null ? '--' : latestSignal.toFixed(2)}
         </span>
-        <span
-          className="text-[11px] font-semibold ml-2"
-          style={{ color: C.text, fontFamily: "JetBrains Mono, monospace", whiteSpace: "nowrap" }}
-        >
-          {(2418).toLocaleString()}
-        </span>
-      </div>
-    </div>
+        <span className="ml-auto">Malformed packets: {malformedPacketCount}</span>
+        <span>Out-of-range predictions: {outOfRangeFrameCount}</span>
+        {chartError ? <span role="status">{chartError}</span> : null}
+      </footer>
+    </section>
   );
 });
+
+SpadHistogram.displayName = 'SpadHistogram';
 
 export default SpadHistogram;

@@ -1,25 +1,26 @@
 {
   "calibration_mode": "concentration_means",
+  "concentration_unit": "ug/mL",
   "models": {
     "lasso": {
-      "alpha": 1.5264179671752334,
-      "equation": "y = 2.29372x + 142.032",
-      "intercept": 142.0321447004739,
+      "alpha": 0.49417133613238334,
+      "equation": "y = 1.89314x + 150.191",
+      "intercept": 150.1908195112416,
       "label": "Lasso Regression",
-      "slope": 2.2937191919163102
+      "slope": 1.8931367375707604
     },
     "linear": {
-      "equation": "y = 2.35284x + 139.076",
-      "intercept": 139.0762490173631,
+      "equation": "y = 1.89898x + 149.325",
+      "intercept": 149.32508214196258,
       "label": "Simple Linear Regression",
-      "slope": 2.3528371055785264
+      "slope": 1.8989778571707154
     },
     "quadratic": {
-      "equation": "y = -0.00472915x^2 + 2.82575x + 130.406",
-      "intercept": 130.40614710835735,
+      "equation": "y = -0.00213997x^2 + 2.54346x + 116.131",
+      "intercept": 116.13060600146656,
       "label": "Quadratic Regression",
-      "linear": 2.825751755160661,
-      "quadratic": -0.004729146495821356
+      "linear": 2.5434583159704474,
+      "quadratic": -0.002139973724199877
     }
   },
   "schema_version": 1,
@@ -32,7 +33,7 @@
     "window_start": 1924
   },
   "valid_concentration_range_ug_ml": [
-    10.0,
-    90.0
+    0.0,
+    290.0
   ]
 }
